@@ -5,6 +5,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::thread;
 use std::time::Duration;
+#[cfg(unix)]
 use sysconf;
 use tiny_http;
 
@@ -99,7 +100,7 @@ struct Stats {
 }
 
 fn parse_stats() -> Result<Stats> {
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") || cfg!(windows) {
         return Ok(Stats {
             utime: 0f64,
             rss: 0u64,
@@ -109,8 +110,11 @@ fn parse_stats() -> Result<Stats> {
     let value = fs::read_to_string("/proc/self/stat").chain_err(|| "failed to read stats")?;
     let parts: Vec<&str> = value.split_whitespace().collect();
     let page_size = page_size::get() as u64;
+    #[cfg(unix)]
     let ticks_per_second = sysconf::raw::sysconf(sysconf::raw::SysconfVariable::ScClkTck)
         .expect("failed to get _SC_CLK_TCK") as f64;
+    #[cfg(not(unix))]
+    let ticks_per_second = 100f64;
 
     let parse_part = |index: usize, name: &str| -> Result<u64> {
         Ok(parts

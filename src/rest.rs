@@ -18,9 +18,11 @@ use bitcoin::hashes::FromSliceError as HashError;
 use hex::{DisplayHex, FromHex};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Response, Server, StatusCode};
+#[cfg(unix)]
 use hyperlocal::UnixServerExt;
 use tokio::sync::oneshot;
 
+#[cfg(unix)]
 use std::fs;
 use std::str::FromStr;
 
@@ -34,6 +36,7 @@ use serde::Serialize;
 use serde_json;
 use std::collections::HashMap;
 use std::num::ParseIntError;
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::thread;
@@ -531,6 +534,7 @@ async fn run_server(config: Arc<Config>, query: Arc<Query>, rx: oneshot::Receive
                 })
                 .await
         }
+        #[cfg(unix)]
         Some(path) => {
             if let Ok(meta) = fs::metadata(&path) {
                 // Cleanup socket file left by previous execution
@@ -548,6 +552,10 @@ async fn run_server(config: Arc<Config>, query: Arc<Query>, rx: oneshot::Receive
                     rx.await.ok();
                 })
                 .await
+        }
+        #[cfg(not(unix))]
+        Some(_) => {
+            panic!("Unix socket files are not supported on this platform");
         }
     };
 
