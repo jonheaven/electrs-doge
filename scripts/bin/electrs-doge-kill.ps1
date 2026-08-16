@@ -22,7 +22,7 @@ function Stop-ElectrsOnPort([int] $Port) {
         try {
             $p = Get-Process -Id $c.OwningProcess -ErrorAction Stop
             if ($p.ProcessName -notmatch '^electrs') {
-                Write-Host "  skip :$Port pid $($p.Id) ($($p.ProcessName)) — not electrs" -ForegroundColor DarkGray
+                Write-Host "  skip :$Port pid $($p.Id) ($($p.ProcessName)) - not electrs" -ForegroundColor DarkGray
                 continue
             }
             Stop-Process -Id $p.Id -Force -ErrorAction Stop
