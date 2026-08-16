@@ -45,17 +45,27 @@ if (-not [System.Environment]::GetEnvironmentVariable('ELECTRS_DB_DIR', 'User'))
     [System.Environment]::SetEnvironmentVariable('ELECTRS_DB_DIR', (Join-Path $dataDir 'electrs'), 'User')
 }
 [System.Environment]::SetEnvironmentVariable('ELECTRS_LIGHTMODE', '1', 'User')
+[System.Environment]::SetEnvironmentVariable('ELECTRS_HTTP_ADDR', '127.0.0.1:3003', 'User')
 
 Write-Host @"
 
-Done. From a new terminal:
-  electrs-doge-launch          # light mode by default; index under F:\DogecoinData\electrs
+Done. Prefer the full stack:
+  dogenals launch              # starts electrs-doge (Electrum :50001 + Esplora :3003)
+  dogenals kill                # stops electrs.exe (not Core)
+  dogenals launch electrs      # electrs only
+  set DOGENALS_SKIP_ELECTRS=1  # omit from dogenals launch
+
+Standalone:
+  electrs-doge launch
   electrs-doge-launch -Build
   electrs-doge-launch -FullMode   # full index when you have disk on a new PC
-  electrs-doge-kill
+  electrs-doge kill
 
-Explorer address history (dogexplorer\.env):
+Explorer address history (dogexplorer\backend\.env):
   DOGEXP_ADDRESS_API=electrum
   DOGEXP_ELECTRUM_SERVERS=tcp://127.0.0.1:50001
+
+Esplora HTTP (not command.dog :3000):
+  http://127.0.0.1:3003  ->  https://electrs.command.dog
 
 "@
