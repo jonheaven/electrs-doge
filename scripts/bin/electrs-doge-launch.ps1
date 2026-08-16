@@ -10,7 +10,7 @@ param(
     [switch] $Build,
     [switch] $FullMode,   # full index (more disk); default is light until you opt in
     [switch] $NoWindow,   # run in this process (blocking)
-    [switch] $Logged      # ~/.dogenals/logs/electrs-doge.log via dogenals-start-logged (dogenals launch)
+    [switch] $Logged      # F:\DogecoinData\dogenals\logs\electrs-doge.log via dogenals-start-logged
 )
 
 $ErrorActionPreference = 'Stop'
@@ -161,7 +161,8 @@ if ($Logged) {
         -WorkingDirectory $repo `
         -WindowTitle 'electrs-doge' `
         -ArgLine $argLine
-    Write-Host "Log: $env:USERPROFILE\.dogenals\logs\electrs-doge.log" -ForegroundColor DarkGray
+    $logRoot = if ($env:DOGENALS_LOG_DIR) { $env:DOGENALS_LOG_DIR } elseif ($env:DOGECOIN_DATA_DIR) { Join-Path $env:DOGECOIN_DATA_DIR 'dogenals\logs' } else { 'F:\DogecoinData\dogenals\logs' }
+    Write-Host "Log: $(Join-Path $logRoot 'electrs-doge.log')" -ForegroundColor DarkGray
 } elseif ($NoWindow) {
     Push-Location $repo
     & $exe @electrsArgs

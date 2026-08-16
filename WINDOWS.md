@@ -16,7 +16,7 @@
 - Electrum TCP `127.0.0.1:50001` — dogexplorer `/address/` pages (`DOGEXP_ADDRESS_API=electrum`)
 - Esplora HTTP `127.0.0.1:3003` — **not** `:3000` (that is command.dog/api). Public: `https://electrs.command.dog`
 - Index DB: `%DOGECOIN_DATA_DIR%\electrs` (default `F:\DogecoinData\electrs`) — read Core blocks/RPC only; never stop Core
-- Logs: `%USERPROFILE%\.dogenals\logs\electrs-doge.log`
+- Logs: `F:\DogecoinData\dogenals\logs\electrs-doge.log`
 - Skip: `DOGENALS_SKIP_ELECTRS=1`
 
 ## Limitations on Windows
