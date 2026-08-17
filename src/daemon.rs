@@ -36,6 +36,15 @@ lazy_static! {
     );
 }
 
+/// Bitcoin electrs batches 50_000 JSON-RPC calls per HTTP POST. That works for 80-byte
+/// Bitcoin headers. Dogecoin `getblockheader` (verbose=false) returns **AuxPoW** hex, so
+/// each result is kilobytes. A 50k batch never returns before `DAEMON_READ_TIMEOUT` (10 min)
+/// on Core 1.14.9 — the socket drops and electrs retries the same gulp forever.
+/// PsyProtocol/electrs-doge copied the Bitcoin size; this is the Dogecoin-sized gulp.
+const JSONRPC_BATCH_SIZE: usize = 64;
+/// Heights pulled per `getblockheaders` round-trip group (still split by JSONRPC_BATCH_SIZE).
+const HEADER_HEIGHT_CHUNK: usize = 512;
+
 fn parse_hash<T>(value: &Value) -> Result<T>
 where
     T: FromStr,
@@ -403,7 +412,7 @@ impl Daemon {
         let chunks = params_list
             .iter()
             .map(|params| json!({"method": method, "params": params, "id": id}))
-            .chunks(50_000); // Max Amount of batched requests
+            .chunks(JSONRPC_BATCH_SIZE);
         let mut results = vec![];
         for chunk in &chunks {
             let reqs = chunk.collect();
@@ -591,12 +600,21 @@ impl Daemon {
             .as_u64()
             .expect("non-numeric height") as usize;
         let all_heights: Vec<usize> = (0..=tip_height).collect();
-        let chunk_size = 100_000;
         let mut result = vec![];
-        for heights in all_heights.chunks(chunk_size) {
-            trace!("downloading {} block headers", heights.len());
-            let mut headers = self.getblockheaders(&heights)?;
+        let mut done = 0usize;
+        for heights in all_heights.chunks(HEADER_HEIGHT_CHUNK) {
+            let start = *heights.first().unwrap_or(&0);
+            let end = *heights.last().unwrap_or(&0);
+            info!(
+                "downloading headers {}..={} ({}/{})",
+                start,
+                end,
+                done + heights.len(),
+                tip_height + 1
+            );
+            let mut headers = self.getblockheaders(heights)?;
             assert!(headers.len() == heights.len());
+            done += headers.len();
             result.append(&mut headers);
         }
 

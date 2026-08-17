@@ -93,19 +93,19 @@ impl Config {
             .arg(
                 Arg::with_name("daemon_dir")
                     .long("daemon-dir")
-                    .help("Data directory of Bitcoind (default: ~/.bitcoin/)")
+                    .help("Data directory of Dogecoin Core (default: ~/.dogecoin/)")
                     .takes_value(true),
             )
             .arg(
                 Arg::with_name("blocks_dir")
                     .long("blocks-dir")
-                    .help("Analogous to bitcoind's -blocksdir option, this specifies the directory containing the raw blocks files (blk*.dat) (default: ~/.bitcoin/blocks/)")
+                    .help("Directory of Core blk*.dat files (default: <daemon-dir>/blocks)")
                     .takes_value(true),
             )
             .arg(
                 Arg::with_name("cookie")
                     .long("cookie")
-                    .help("JSONRPC authentication cookie ('USER:PASSWORD', default: read from ~/.bitcoin/.cookie)")
+                    .help("JSONRPC authentication cookie ('USER:PASSWORD', default: read from <daemon-dir>/.cookie)")
                     .takes_value(true),
             )
             .arg(
@@ -129,7 +129,7 @@ impl Config {
             .arg(
                 Arg::with_name("daemon_rpc_addr")
                     .long("daemon-rpc-addr")
-                    .help("Bitcoin daemon JSONRPC 'addr:port' to connect (default: 127.0.0.1:8332 for mainnet, 127.0.0.1:18332 for testnet and 127.0.0.1:18443 for regtest)")
+                    .help("Dogecoin Core JSONRPC 'addr:port' to connect (default: 127.0.0.1:22555 mainnet, 127.0.0.1:44555 testnet, 127.0.0.1:18332 regtest)")
                     .takes_value(true),
             )
             .arg(
@@ -255,11 +255,11 @@ impl Config {
 
         let default_daemon_port = match network_type {
             #[cfg(not(feature = "liquid"))]
-            Network::Bitcoin => 8332,
+            Network::Bitcoin => 22555,
             #[cfg(not(feature = "liquid"))]
-            Network::Testnet => 18332,
+            Network::Testnet => 44555,
             #[cfg(not(feature = "liquid"))]
-            Network::Regtest => 18443,
+            Network::Regtest => 18332,
             #[cfg(not(feature = "liquid"))]
             Network::Signet => 38332,
 
@@ -287,7 +287,7 @@ impl Config {
         };
         let default_http_port = match network_type {
             #[cfg(not(feature = "liquid"))]
-            Network::Bitcoin => 3000,
+            Network::Bitcoin => 3003,
             #[cfg(not(feature = "liquid"))]
             Network::Testnet => 3001,
             #[cfg(not(feature = "liquid"))]
@@ -348,7 +348,7 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let mut default_dir = home_dir().expect("no homedir");
-                default_dir.push(".bitcoin");
+                default_dir.push(".dogecoin");
                 default_dir
             });
 

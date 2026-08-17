@@ -145,7 +145,20 @@ function Format-ArgLine([string[]] $ArgsIn) {
     }) -join ' '
 }
 
+function Format-ArgLinePublic([string[]] $ArgsIn) {
+    $skip = $false
+    $parts = foreach ($a in $ArgsIn) {
+        if ($skip) { $skip = $false; '***'; continue }
+        if ($a -eq '--cookie') { $skip = $true; '--cookie'; continue }
+        if ($a -match '\s') { "`"$a`"" } else { $a }
+    }
+    $parts -join ' '
+}
+
 $argLine = Format-ArgLine $electrsArgs
+$argLinePublic = Format-ArgLinePublic $electrsArgs
+
+Write-Host "  Args:       $argLinePublic" -ForegroundColor DarkGray
 
 if ($Logged) {
     $tee = Join-Path $env:USERPROFILE 'bin\dogenals-start-logged.ps1'
