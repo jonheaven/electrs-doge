@@ -9,18 +9,35 @@
 - **`src/signal.rs`**: Windows uses `signal_hook::flag` polling; no `SIGUSR1`.
 - **`src/metrics.rs`**: Process stats stub on Windows (Prometheus gauges stay zero).
 
-## Upstream (PsyProtocol / Blockstream)
+## Upstream (PsyProtocol / Blockstream Esplora)
 
-The `doge` branch is Blockstream electrs with `rust-dogecoin` swapped in for AuxPoW + Dogecoin genesis. That part is real.
+Stay on **Blockstream `new-index` / Esplora**. Do **not** rebase onto [romanz/electrs](https://github.com/romanz/electrs) v0.11 (Feb 2026). That is current Bitcoin electrs, but a different product: compact Electrum-only index, **no Esplora HTTP**, blocks via **P2P** not `blk*.dat`. This stack needs Esplora (`dojak`, doge-sdk, command.dog proxy, dogexplorer).
 
-What was **not** retuned for Dogecoin L1:
+The `doge` branch is Blockstream electrs with `rust-dogecoin` for AuxPoW + Dogecoin genesis. That part is real.
 
-- JSON-RPC batches of **50,000** `getblockheader`s. Fine for 80-byte Bitcoin headers. Dogecoin headers include **AuxPoW**, so Core 1.14 drops the socket around `DAEMON_READ_TIMEOUT` (10 min) and electrs retries the same gulp forever. Index tip stays 0; Electrum/HTTP never bind.
-- Default Core RPC **:8332** / `~/.bitcoin` (this fork now defaults to **:22555** / `~/.dogecoin`; `dogenals launch` already passed the right flags).
+What was **not** retuned for Dogecoin L1 (fixed in this fork):
 
-Header download then blk*.dat index is the same design as Bitcoin electrs. It was incomplete for **mainnet Dogecoin volume + AuxPoW**, not missing a protocol.
+- JSON-RPC batches of **50,000** `getblockheader`s. Fine for 80-byte Bitcoin headers. Dogecoin headers include **AuxPoW**, so Core 1.14 drops the socket around `DAEMON_READ_TIMEOUT` (10 min) and electrs retries the same gulp forever. Index tip stays 0; Electrum/HTTP never bind. Now `JSONRPC_BATCH_SIZE = 64`. Log: `downloading headers START..=END (N/TIP)`.
+- Default Core RPC **:8332** / `~/.bitcoin` (this fork defaults to **:22555** / `~/.dogecoin`; `dogenals launch` already passed the right flags).
+- Pipeline depth **1** (Blockstream now uses **2**) and a **new rayon pool per blk file**.
+- Whole-file `fs::read` plus **byte-scanning Core zero-padding** after the last real block (minutes per `blk*.dat`).
 
-This fork: `JSONRPC_BATCH_SIZE = 64`. Log lines `downloading headers START..=END (N/TIP)`.
+Bitcoin Core v28 xor-key on blk files: **skip**. Dogecoin 1.14 does not xor.
+
+### dogex `blk_reader` (same machine, different job)
+
+dogex is the metaprotocol indexer. Useful **I/O** ideas, not its protocol index:
+
+| Steal | Leave in dogex |
+|---|---|
+| Sequential `blk*.dat` scan; **stop** on padding/bad magic | Opening Core `blocks/index` LevelDB while Core is running (`LOCK`) |
+| Bounded batches (~32 MiB / 256 blocks) so RocksDB writes overlap the next read | Height-random prefetch via `blk-index` shadow |
+| Windows `FILE_FLAG_SEQUENTIAL_SCAN` | `DOGEX_BLK_FULL_SCAN` / live-index repair |
+| Progress that is visible in the log | Inscriptions / Ðunes / Treats in this process |
+
+`--lightmode` stays the launch default (faster ingest; queries hit Core). `--jsonrpc-import` is slower; keep `FetchFrom::BlkFiles` after headers.
+
+This fork: header batches of 64, pipeline depth 2, reused parse pool, sequential 32 MiB batches, RocksDB `increase_parallelism(num_cpus)`, compaction readahead 4 MiB.
 
 ## Stack (dogenals launch)
 

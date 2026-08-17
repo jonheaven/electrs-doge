@@ -93,8 +93,9 @@ impl DB {
         db_opts.set_disable_auto_compactions(true); // for initial bulk load
         debug!("configured rocksdb options at {:?}", path);
         // db_opts.set_advise_random_on_open(???);
-        db_opts.set_compaction_readahead_size(1 << 20);
-        db_opts.increase_parallelism(2);
+        db_opts.set_compaction_readahead_size(4 << 20);
+        let parallelism = num_cpus::get().max(2) as i32;
+        db_opts.increase_parallelism(parallelism);
         debug!("finalized rocksdb options at {:?}", path);
         // let mut block_opts = rocksdb::BlockBasedOptions::default();
         // block_opts.set_block_size(???);

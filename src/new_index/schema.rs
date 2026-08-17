@@ -269,8 +269,8 @@ impl Indexer {
         let new_headers = self.get_new_headers(&daemon, &tip)?;
 
         let to_add = self.headers_to_add(&new_headers);
-        debug!(
-            "adding transactions from {} blocks using {:?}",
+        info!(
+            "blk ingest: {} blocks via {:?} (txstore then history)",
             to_add.len(),
             self.from
         );
@@ -309,6 +309,7 @@ impl Indexer {
     }
 
     fn add(&self, blocks: &[BlockEntry]) {
+        log_blk_batch("txstore", blocks);
         // TODO: skip orphaned blocks?
         let rows = {
             let _timer = self.start_timer("add_process");
@@ -327,6 +328,7 @@ impl Indexer {
     }
 
     fn index(&self, blocks: &[BlockEntry]) {
+        log_blk_batch("history", blocks);
         let previous_txos_map = {
             let _timer = self.start_timer("index_lookup");
             lookup_txos(&self.store.txstore_db, &get_previous_txos(blocks), false)
@@ -980,6 +982,24 @@ fn load_blockheaders(db: &DB) -> HashMap<BlockHash, BlockHeader> {
             (key, value)
         })
         .collect()
+}
+
+fn log_blk_batch(phase: &str, blocks: &[BlockEntry]) {
+    let (Some(first), Some(last)) = (blocks.first(), blocks.last()) else {
+        return;
+    };
+    let fh = first.entry.height();
+    let lh = last.entry.height();
+    // One line per ~10k heights so a speed-run is visible without a line per 256-block batch.
+    if fh / 10_000 != lh / 10_000 {
+        info!(
+            "{} heights {}..={} ({} blocks in this batch)",
+            phase,
+            fh,
+            lh,
+            blocks.len()
+        );
+    }
 }
 
 fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRow> {

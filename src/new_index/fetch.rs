@@ -3,14 +3,14 @@ use rayon::prelude::*;
 #[cfg(feature = "liquid")]
 use crate::elements::ebcompact::*;
 #[cfg(not(feature = "liquid"))]
-use bitcoin::consensus::encode::{deserialize, Decodable};
+use bitcoin::consensus::encode::deserialize;
 #[cfg(feature = "liquid")]
-use elements::encode::{deserialize, Decodable};
+use elements::encode::deserialize;
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::Cursor;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::thread;
 
@@ -18,6 +18,20 @@ use crate::chain::{Block, BlockHash};
 use crate::daemon::Daemon;
 use crate::errors::*;
 use crate::util::{spawn_thread, HeaderEntry, SyncChannel};
+
+/// Overlap disk read, CPU parse, and RocksDB write. Current Blockstream `new-index` uses 2;
+/// this fork used to use 1 and stalled the disk reader behind every RocksDB batch.
+const BLK_PIPELINE: usize = 2;
+
+/// dogex `BlkReader` / sidelane prefetch: sequential read, then a bounded CPU batch so
+/// the indexer can write while the next slice of the same `blk*.dat` is still coming in.
+/// Whole-file `fs::read` (~128 MiB) plus byte-scanning Core zero-padding was the slow path.
+const BLK_BATCH_BYTES: usize = 32 * 1024 * 1024;
+const BLK_BATCH_BLOCKS: usize = 256;
+const DOGE_MAX_BLOCK_BYTES: u32 = 8_000_000;
+
+#[cfg(windows)]
+const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 
 #[derive(Clone, Copy, Debug)]
 pub enum FetchFrom {
@@ -74,7 +88,7 @@ fn bitcoind_fetcher(
         debug!("{:?} ({} left to index)", tip, new_headers.len());
     };
     let daemon = daemon.reconnect()?;
-    let chan = SyncChannel::new(1);
+    let chan = SyncChannel::new(BLK_PIPELINE);
     let sender = chan.sender();
     Ok(Fetcher::from(
         chan.into_receiver(),
@@ -110,12 +124,12 @@ fn blkfiles_fetcher(
     let magic = daemon.magic();
     let blk_files = daemon.list_blk_files()?;
 
-    let chan = SyncChannel::new(1);
+    let chan = SyncChannel::new(BLK_PIPELINE);
     let sender = chan.sender();
     let mut entry_map: HashMap<BlockHash, HeaderEntry> =
         new_headers.into_iter().map(|h| (*h.hash(), h)).collect();
 
-    let parser = blkfiles_parser(blkfiles_reader(blk_files), magic);
+    let parser = blkfiles_parser(blkfiles_reader(blk_files, magic));
     Ok(Fetcher::from(
         chan.into_receiver(),
         spawn_thread("blkfiles_fetcher", move || {
@@ -133,6 +147,9 @@ fn blkfiles_fetcher(
                             })
                     })
                     .collect();
+                if block_entries.is_empty() {
+                    return;
+                }
                 trace!("fetched {} blocks", block_entries.len());
                 sender
                     .send(block_entries)
@@ -148,35 +165,44 @@ fn blkfiles_fetcher(
     ))
 }
 
-fn blkfiles_reader(blk_files: Vec<PathBuf>) -> Fetcher<Vec<u8>> {
-    let chan = SyncChannel::new(1);
+fn blkfiles_reader(blk_files: Vec<PathBuf>, magic: u32) -> Fetcher<Vec<(Vec<u8>, u32)>> {
+    let chan = SyncChannel::new(BLK_PIPELINE);
     let sender = chan.sender();
 
     Fetcher::from(
         chan.into_receiver(),
         spawn_thread("blkfiles_reader", move || {
-            for path in blk_files {
-                trace!("reading {:?}", path);
-                let blob = fs::read(&path)
-                    .unwrap_or_else(|e| panic!("failed to read {:?}: {:?}", path, e));
-                sender
-                    .send(blob)
-                    .unwrap_or_else(|_| panic!("failed to send {:?} contents", path));
+            let n = blk_files.len();
+            for (i, path) in blk_files.into_iter().enumerate() {
+                info!("reading blk file {}/{} {:?}", i + 1, n, path);
+                read_blk_file_batches(&path, magic, |batch| {
+                    sender.send(batch).unwrap_or_else(|_| {
+                        panic!("failed to send {:?} contents", path)
+                    });
+                });
             }
         }),
     )
 }
 
-fn blkfiles_parser(blobs: Fetcher<Vec<u8>>, magic: u32) -> Fetcher<Vec<SizedBlock>> {
-    let chan = SyncChannel::new(1);
+fn blkfiles_parser(blobs: Fetcher<Vec<(Vec<u8>, u32)>>) -> Fetcher<Vec<SizedBlock>> {
+    let chan = SyncChannel::new(BLK_PIPELINE);
     let sender = chan.sender();
 
     Fetcher::from(
         chan.into_receiver(),
         spawn_thread("blkfiles_parser", move || {
-            blobs.map(|blob| {
-                trace!("parsing {} bytes", blob.len());
-                let blocks = parse_blocks(blob, magic).expect("failed to parse blk*.dat file");
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(0)
+                .thread_name(|i| format!("parse-blocks-{}", i))
+                .build()
+                .unwrap();
+            blobs.map(|batch| {
+                if batch.is_empty() {
+                    return;
+                }
+                trace!("parsing {} raw blocks", batch.len());
+                let blocks = parse_block_blobs(&pool, batch);
                 sender
                     .send(blocks)
                     .expect("failed to send blocks from blk*.dat file");
@@ -185,52 +211,85 @@ fn blkfiles_parser(blobs: Fetcher<Vec<u8>>, magic: u32) -> Fetcher<Vec<SizedBloc
     )
 }
 
-fn parse_blocks(blob: Vec<u8>, magic: u32) -> Result<Vec<SizedBlock>> {
-    let mut cursor = Cursor::new(&blob);
-    let mut slices = vec![];
-    let max_pos = blob.len() as u64;
-
-    while cursor.position() < max_pos {
-        let offset = cursor.position();
-        match u32::consensus_decode(&mut cursor) {
-            Ok(value) => {
-                if magic != value {
-                    cursor.set_position(offset + 1);
-                    continue;
-                }
-            }
-            Err(_) => break, // EOF
-        };
-        let block_size = u32::consensus_decode(&mut cursor).chain_err(|| "no block size")?;
-        let start = cursor.position();
-        let end = start + block_size as u64;
-
-        // If Core's WriteBlockToDisk ftell fails, only the magic bytes and size will be written
-        // and the block body won't be written to the blk*.dat file.
-        // Since the first 4 bytes should contain the block's version, we can skip such blocks
-        // by peeking the cursor (and skipping previous `magic` and `block_size`).
-        match u32::consensus_decode(&mut cursor) {
-            Ok(value) => {
-                if magic == value {
-                    cursor.set_position(start);
-                    continue;
-                }
-            }
-            Err(_) => break, // EOF
-        }
-        slices.push((&blob[start as usize..end as usize], block_size));
-        cursor.set_position(end as u64);
+fn open_blk_sequential(path: &Path) -> std::io::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        opts.custom_flags(FILE_FLAG_SEQUENTIAL_SCAN);
     }
+    opts.open(path)
+}
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(0) // CPU-bound
-        .thread_name(|i| format!("parse-blocks-{}", i))
-        .build()
-        .unwrap();
-    Ok(pool.install(|| {
-        slices
+/// Sequential Core `blk*.dat` scan (same idea as dogex `BlkReader::scan_file`).
+/// Stop on magic mismatch / oversize — Core pads files with zeros; byte-walking
+/// that padding (old Blockstream parser) is a multi-minute stall per file.
+fn read_next_raw_block(
+    r: &mut BufReader<File>,
+    magic: u32,
+) -> Option<(Vec<u8>, u32)> {
+    loop {
+        let pos = r.stream_position().ok()?;
+        let mut mag = [0u8; 4];
+        if r.read_exact(&mut mag).is_err() {
+            return None;
+        }
+        let value = u32::from_le_bytes(mag);
+        if value != magic {
+            return None;
+        }
+        let mut szb = [0u8; 4];
+        if r.read_exact(&mut szb).is_err() {
+            return None;
+        }
+        let block_size = u32::from_le_bytes(szb);
+        if block_size == 0 || block_size > DOGE_MAX_BLOCK_BYTES {
+            return None;
+        }
+        // Core WriteBlockToDisk ftell failure: magic+size written, body missing.
+        // First payload u32 then equals magic — skip this truncated record.
+        let mut peek = [0u8; 4];
+        if r.read_exact(&mut peek).is_err() {
+            return None;
+        }
+        if u32::from_le_bytes(peek) == magic {
+            let _ = r.seek(SeekFrom::Start(pos + 8));
+            continue;
+        }
+        let mut blob = vec![0u8; block_size as usize];
+        blob[..4].copy_from_slice(&peek);
+        if r.read_exact(&mut blob[4..]).is_err() {
+            return None;
+        }
+        return Some((blob, block_size));
+    }
+}
+
+fn read_blk_file_batches(path: &Path, magic: u32, mut send: impl FnMut(Vec<(Vec<u8>, u32)>)) {
+    let file = open_blk_sequential(path)
+        .unwrap_or_else(|e| panic!("failed to read {:?}: {:?}", path, e));
+    let mut reader = BufReader::with_capacity(8 << 20, file);
+    let mut batch: Vec<(Vec<u8>, u32)> = Vec::new();
+    let mut batch_bytes = 0usize;
+    while let Some((blob, size)) = read_next_raw_block(&mut reader, magic) {
+        batch_bytes += blob.len();
+        batch.push((blob, size));
+        if batch_bytes >= BLK_BATCH_BYTES || batch.len() >= BLK_BATCH_BLOCKS {
+            send(std::mem::take(&mut batch));
+            batch_bytes = 0;
+        }
+    }
+    if !batch.is_empty() {
+        send(batch);
+    }
+}
+
+fn parse_block_blobs(pool: &rayon::ThreadPool, batch: Vec<(Vec<u8>, u32)>) -> Vec<SizedBlock> {
+    pool.install(|| {
+        batch
             .into_par_iter()
-            .map(|(slice, size)| (deserialize(slice).expect("failed to parse Block"), size))
+            .map(|(slice, size)| (deserialize(&slice).expect("failed to parse Block"), size))
             .collect()
-    }))
+    })
 }
