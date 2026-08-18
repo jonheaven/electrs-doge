@@ -28,8 +28,22 @@ if (-not $TargetBin) {
 New-Item -ItemType Directory -Path $TargetBin -Force | Out-Null
 
 foreach ($f in Get-ChildItem -LiteralPath $srcBin -File) {
-    Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $TargetBin $f.Name) -Force
-    Write-Host "Installed $($f.Name) -> $TargetBin"
+    $dst = Join-Path $TargetBin $f.Name
+    if (Test-Path -LiteralPath $dst) {
+        Remove-Item -LiteralPath $dst -Force
+    }
+    $linked = $false
+    try {
+        New-Item -ItemType HardLink -Path $dst -Target $f.FullName | Out-Null
+        $linked = $true
+        Write-Host "hardlink $($f.Name) -> $TargetBin"
+    } catch {
+        $linked = $false
+    }
+    if (-not $linked) {
+        Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
+        Write-Host "copied $($f.Name) -> $TargetBin"
+    }
 }
 
 $electrsRepo = Join-Path $DogecoRoot 'electrs-doge'
