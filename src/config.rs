@@ -416,7 +416,13 @@ impl Config {
             #[cfg(feature = "electrum-discovery")]
             tor_proxy: m.value_of("tor_proxy").map(|s| s.parse().unwrap()),
         };
-        eprintln!("{:?}", config);
+        {
+            let mut logged = config.clone();
+            if logged.cookie.is_some() {
+                logged.cookie = Some("***".to_string());
+            }
+            eprintln!("{:?}", logged);
+        }
         config
     }
 
