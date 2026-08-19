@@ -65,16 +65,55 @@ if ($httpAddr -match ':3000\s*$') {
 
 $electrumPort = Get-ListenPort $electrumAddr 50001
 $httpPort = Get-ListenPort $httpAddr 3003
+$rpcPort = Get-ListenPort $daemonRpc 22555
+$exe = Join-Path $repo 'target\release\electrs.exe'
+$daemonSrc = Join-Path $repo 'src\daemon.rs'
+
+function Write-ElectrsPreflight {
+    $coreUp = Test-PortListen $rpcPort
+    if (-not $coreUp) {
+        Write-Host "Dogecoin Core RPC is NOT listening on $daemonRpc" -ForegroundColor Red
+        Write-Host "electrs will retry every 3s and index NOTHING until dogecoin-qt is up." -ForegroundColor Yellow
+        Write-Host "Leave Core running. Do not stop or reindex Core from this script." -ForegroundColor Yellow
+    } else {
+        Write-Host "Core RPC $daemonRpc is listening (electrs waits out -28 warmup on its own)." -ForegroundColor DarkGray
+    }
+
+    if (Test-Path -LiteralPath $exe) {
+        $exeTime = (Get-Item -LiteralPath $exe).LastWriteTime
+        if (Test-Path -LiteralPath $daemonSrc) {
+            $srcTime = (Get-Item -LiteralPath $daemonSrc).LastWriteTime
+            if ($exeTime -lt $srcTime) {
+                Write-Host "STALE electrs.exe ($exeTime) is older than src\daemon.rs ($srcTime)" -ForegroundColor Red
+                Write-Host "This binary still uses Bitcoin-sized 50k AuxPoW getblockheader gulps and never finishes on Dogecoin Core 1.14." -ForegroundColor Yellow
+                Write-Host "Compile, then bounce electrs only (not Core):" -ForegroundColor Yellow
+                Write-Host "  cd $repo" -ForegroundColor Cyan
+                Write-Host "  cargo build --release" -ForegroundColor Cyan
+                Write-Host "  dogenals kill electrs" -ForegroundColor Cyan
+                Write-Host "  dogenals launch electrs" -ForegroundColor Cyan
+            }
+        }
+    } else {
+        Write-Host "Missing $exe -- compile once before launch." -ForegroundColor Red
+    }
+}
+
+Write-ElectrsPreflight
 
 $existing = Get-Process -Name electrs -ErrorAction SilentlyContinue
 if ($existing -or (Test-PortListen $electrumPort) -or (Test-PortListen $httpPort)) {
-    Write-Host "electrs-doge already running (Electrum :$electrumPort / HTTP :$httpPort)" -ForegroundColor DarkGray
+    Write-Host "electrs-doge already running (Electrum :$electrumPort / HTTP :$httpPort) pid=$($existing.Id)" -ForegroundColor DarkGray
+    if ($existing -and (Test-Path -LiteralPath $daemonSrc) -and (Test-Path -LiteralPath $exe)) {
+        $exeTime = (Get-Item -LiteralPath $exe).LastWriteTime
+        $srcTime = (Get-Item -LiteralPath $daemonSrc).LastWriteTime
+        if ($exeTime -lt $srcTime) {
+            Write-Host "That process is the stale binary. Kill + relaunch after cargo build --release." -ForegroundColor Red
+        }
+    }
     exit 0
 }
 
 New-Item -ItemType Directory -Path $dbDir -Force | Out-Null
-
-$exe = Join-Path $repo 'target\release\electrs.exe'
 if ($Build) {
     Write-Host 'Building electrs (release)...' -ForegroundColor Yellow
     Push-Location $repo

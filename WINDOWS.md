@@ -39,6 +39,30 @@ dogex is the metaprotocol indexer. Useful **I/O** ideas, not its protocol index:
 
 This fork: header batches of 64, pipeline depth 2, reused parse pool, sequential 32 MiB batches, RocksDB `increase_parallelism(num_cpus)`, compaction readahead 4 MiB.
 
+## Runtime (this PC)
+
+Electrs indexes **Dogecoin Core** (`dogecoin/` / `dogecoin-qt` RPC `:22555`). It cannot make progress if:
+
+1. **Core is down** — log is only `failed to connect daemon … os error 10061`. Restart Qt yourself; never from this repo.
+2. **`electrs.exe` is stale** — `target/release/electrs.exe` older than `src/daemon.rs` still uses Bitcoin-sized 50k `getblockheader` batches. AuxPoW replies from Core 1.14 never finish. Compile, then bounce **electrs only**.
+
+Healthy ingest after Core warmup (`-28` Loading block index is fine):
+
+```text
+downloading headers 0..=511 (512/TIP)
+reading blk file i/N ...
+```
+
+Not healthy: `TRACE downloading 100000 block headers` or a full day of connection-refused.
+
+```powershell
+cd C:\Users\jheav\Desktop\dogeco\electrs-doge
+cargo build --release
+dogenals kill electrs
+dogenals launch electrs
+dogenals tail electrs-doge
+```
+
 ## Stack (dogenals launch)
 
 `dogenals launch` starts electrs-doge with the rest of the eco:

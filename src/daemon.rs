@@ -333,11 +333,23 @@ impl Daemon {
         };
         let network_info = daemon.getnetworkinfo()?;
         info!("{:?}", network_info);
-        if network_info.version < 16_00_00 {
+        // Bitcoin electrs required Core 0.16+ (`version` 160000).
+        // Dogecoin Core `/Shibetoshi:1.14.x/` reports CLIENT_VERSION 1_14_xxxx,
+        // which already clears 160000. Still reject pre-1.14 dogecoind.
+        let sub = network_info.subversion.to_ascii_lowercase();
+        let is_doge = sub.contains("shibe") || sub.contains("doge");
+        if is_doge {
+            if network_info.version < 1_14_00_00 {
+                bail!(
+                    "{} is not supported - please use Dogecoin Core 1.14+",
+                    network_info.subversion
+                );
+            }
+        } else if network_info.version < 16_00_00 {
             bail!(
                 "{} is not supported - please use bitcoind 0.16+",
-                network_info.subversion,
-            )
+                network_info.subversion
+            );
         }
         let blockchain_info = daemon.getblockchaininfo()?;
         info!("{:?}", blockchain_info);
