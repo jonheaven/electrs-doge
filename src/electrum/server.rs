@@ -20,15 +20,15 @@ use elements::encode::serialize_hex;
 
 use crate::chain::Txid;
 use crate::config::{Config, RpcLogging};
-use crate::electrum::{get_electrum_height, ProtocolVersion};
+use crate::electrum::{
+    get_electrum_height, local_server_features, protocol_in_range, server_id, PROTOCOL_VERSION,
+};
 use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramVec, MetricOpts, Metrics};
 use crate::new_index::{Query, Utxo};
 use crate::util::electrum_merkle::{get_header_merkle_proof, get_id_from_pos, get_tx_merkle_proof};
 use crate::util::{create_socket, spawn_thread, BlockId, BoolThen, Channel, FullHash, HeaderEntry};
 
-const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
-const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
 const MAX_HEADERS: usize = 2016;
 
 #[cfg(feature = "electrum-discovery")]
@@ -145,24 +145,40 @@ impl Connection {
         Ok(result)
     }
 
-    fn server_version(&self) -> Result<Value> {
-        Ok(json!([
-            format!("electrs-esplora {}", ELECTRS_VERSION),
-            PROTOCOL_VERSION
-        ]))
+    fn server_version(&self, params: &[Value]) -> Result<Value> {
+        if params.len() >= 2 {
+            match &params[1] {
+                Value::String(exact) => {
+                    protocol_in_range(&PROTOCOL_VERSION.to_string(), exact, exact)
+                        .chain_err(|| format!("unsupported protocol {:?}", exact))?;
+                }
+                Value::Array(range) if range.len() == 2 => {
+                    let min = range[0]
+                        .as_str()
+                        .chain_err(|| "protocol min must be a string")?;
+                    let max = range[1]
+                        .as_str()
+                        .chain_err(|| "protocol max must be a string")?;
+                    protocol_in_range(&PROTOCOL_VERSION.to_string(), min, max).chain_err(|| {
+                        format!("unsupported protocol range {:?}..={:?}", min, max)
+                    })?;
+                }
+                other => bail!("invalid server.version protocol {:?}", other),
+            }
+        }
+        Ok(json!([server_id(), PROTOCOL_VERSION]))
     }
 
     fn server_banner(&self) -> Result<Value> {
         Ok(json!(self.query.config().electrum_banner.clone()))
     }
 
-    #[cfg(feature = "electrum-discovery")]
     fn server_features(&self) -> Result<Value> {
-        let discovery = self
-            .discovery
-            .as_ref()
-            .chain_err(|| "discovery is disabled")?;
-        Ok(json!(discovery.our_features()))
+        #[cfg(feature = "electrum-discovery")]
+        if let Some(discovery) = self.discovery.as_ref() {
+            return Ok(json!(discovery.our_features()));
+        }
+        Ok(local_server_features(self.query.config()))
     }
 
     fn server_donation_address(&self) -> Result<Value> {
@@ -263,12 +279,10 @@ impl Connection {
 
     fn blockchain_estimatefee(&self, params: &[Value]) -> Result<Value> {
         let conf_target = usize_from_value(params.get(0), "blocks_count")?;
-        let fee_rate = self
-            .query
-            .estimate_fee(conf_target as u16)
-            .chain_err(|| format!("cannot estimate fee for {} blocks", conf_target))?;
-        // convert from sat/b to BTC/kB, as expected by Electrum clients
-        Ok(json!(fee_rate / 100_000f64))
+        match self.query.estimate_fee(conf_target as u16) {
+            Some(fee_rate) => Ok(json!(fee_rate / 100_000f64)),
+            None => Ok(json!(-1)),
+        }
     }
 
     fn blockchain_relayfee(&self) -> Result<Value> {
@@ -288,6 +302,15 @@ impl Connection {
             self.stats.subscriptions.inc();
         }
         Ok(status_hash)
+    }
+
+    fn blockchain_scripthash_unsubscribe(&mut self, params: &[Value]) -> Result<Value> {
+        let script_hash = hash_from_value(params.get(0)).chain_err(|| "bad script_hash")?;
+        let removed = self.status_hashes.remove(&script_hash).is_some();
+        if removed {
+            self.stats.subscriptions.dec();
+        }
+        Ok(json!(removed))
     }
 
     #[cfg(not(feature = "liquid"))]
@@ -364,9 +387,8 @@ impl Connection {
             None => false,
         };
 
-        // FIXME: implement verbose support
         if verbose {
-            bail!("verbose transactions are currently unsupported");
+            return self.query.getrawtransaction_verbose(&tx_hash);
         }
 
         let rawtx = self
@@ -430,6 +452,7 @@ impl Connection {
             "blockchain.scripthash.get_history" => self.blockchain_scripthash_get_history(&params),
             "blockchain.scripthash.listunspent" => self.blockchain_scripthash_listunspent(&params),
             "blockchain.scripthash.subscribe" => self.blockchain_scripthash_subscribe(&params),
+            "blockchain.scripthash.unsubscribe" => self.blockchain_scripthash_unsubscribe(&params),
             "blockchain.transaction.broadcast" => self.blockchain_transaction_broadcast(&params),
             "blockchain.transaction.get" => self.blockchain_transaction_get(&params),
             "blockchain.transaction.get_merkle" => self.blockchain_transaction_get_merkle(&params),
@@ -441,17 +464,17 @@ impl Connection {
             "server.donation_address" => self.server_donation_address(),
             "server.peers.subscribe" => self.server_peers_subscribe(),
             "server.ping" => Ok(Value::Null),
-            "server.version" => self.server_version(),
-
-            #[cfg(feature = "electrum-discovery")]
+            "server.version" => self.server_version(&params),
             "server.features" => self.server_features(),
+
             #[cfg(feature = "electrum-discovery")]
             "server.add_peer" => self.server_add_peer(&params),
 
-            &_ => bail!("unknown method {} {:?}", method, params),
+            &_ => {
+                return Ok(rpc_error(id, -32601, "method not found"));
+            }
         };
         timer.observe_duration();
-        // TODO: return application errors should be sent to the client
         Ok(match result {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(e) => {
@@ -462,9 +485,57 @@ impl Connection {
                     params,
                     e.display_chain()
                 );
-                json!({"jsonrpc": "2.0", "id": id, "error": format!("{}", e)})
+                rpc_error(id, 1, format!("{}", e))
             }
         })
+    }
+
+    fn dispatch_request(
+        &mut self,
+        cmd: &Value,
+        empty_params: &Value,
+        start_time: Instant,
+    ) -> Result<Value> {
+        match (
+            cmd.get("method"),
+            cmd.get("params").unwrap_or(empty_params),
+            cmd.get("id"),
+        ) {
+            (Some(&Value::String(ref method)), Value::Array(params), Some(id)) => {
+                conditionally_log_rpc_event!(
+                    self,
+                    json!({
+                        "event": "rpc request",
+                        "id": id,
+                        "method": method,
+                        "params": if let Some(RpcLogging::Full) = self.rpc_logging {
+                            json!(params)
+                        } else {
+                            Value::Null
+                        }
+                    })
+                );
+
+                let reply = self.handle_command(method, params, id)?;
+
+                conditionally_log_rpc_event!(
+                    self,
+                    json!({
+                        "event": "rpc response",
+                        "method": method,
+                        "payload_size": reply.to_string().as_bytes().len(),
+                        "duration_micros": start_time.elapsed().as_micros(),
+                        "id": id,
+                    })
+                );
+                Ok(reply)
+            }
+            _ => Ok(rpc_error(
+                cmd.get("id").unwrap_or(&Value::Null),
+                -32600,
+                "invalid request",
+            )),
+        }
     }
 
     fn update_subscriptions(&mut self) -> Result<Vec<Value>> {
@@ -532,49 +603,23 @@ impl Connection {
             trace!("RPC {:?}", msg);
             match msg {
                 Message::Request(line) => {
-                    let cmd: Value = from_str(&line).chain_err(|| "invalid JSON format")?;
-                    match (
-                        cmd.get("method"),
-                        cmd.get("params").unwrap_or_else(|| &empty_params),
-                        cmd.get("id"),
-                    ) {
-                        (
-                            Some(&Value::String(ref method)),
-                            &Value::Array(ref params),
-                            Some(ref id),
-                        ) => {
-                            conditionally_log_rpc_event!(
-                                self,
-                                json!({
-                                    "event": "rpc request",
-                                    "id": id,
-                                    "method": method,
-                                    "params": if let Some(RpcLogging::Full) = self.rpc_logging {
-                                        json!(params)
-                                    } else {
-                                        Value::Null
-                                    }
-                                })
-                            );
-
-                            let reply = self.handle_command(method, params, id)?;
-
-                            conditionally_log_rpc_event!(
-                                self,
-                                json!({
-                                    "event": "rpc response",
-                                    "method": method,
-                                    "payload_size": reply.to_string().as_bytes().len(),
-                                    "duration_micros": start_time.elapsed().as_micros(),
-                                    "id": id,
-                                })
-                            );
-
-                            self.send_values(&[reply])?
+                    let cmd: Value = match from_str(&line) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            warn!("invalid JSON from {}", self.addr);
+                            self.send_values(&[rpc_error(&Value::Null, -32700, "parse error")])?;
+                            continue;
                         }
-                        _ => {
-                            bail!("invalid command: {}", cmd)
+                    };
+                    if let Some(batch) = cmd.as_array() {
+                        let mut replies = Vec::with_capacity(batch.len());
+                        for item in batch {
+                            replies.push(self.dispatch_request(item, &empty_params, start_time)?);
                         }
+                        self.send_values(&replies)?
+                    } else {
+                        let reply = self.dispatch_request(&cmd, &empty_params, start_time)?;
+                        self.send_values(&[reply])?
                     }
                 }
                 Message::PeriodicUpdate => {
@@ -648,6 +693,10 @@ impl Connection {
             error!("[{}] receiver failed: {}", self.addr, err);
         }
     }
+}
+
+fn rpc_error(id: &Value, code: i64, message: impl ToString) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.to_string()}})
 }
 
 fn get_history(
@@ -766,7 +815,7 @@ impl RPC {
             use crate::chain::genesis_hash;
             let features = ServerFeatures {
                 hosts,
-                server_version: format!("electrs-esplora {}", ELECTRS_VERSION),
+                server_version: crate::electrum::server_id(),
                 genesis_hash: genesis_hash(config.network_type),
                 protocol_min: PROTOCOL_VERSION,
                 protocol_max: PROTOCOL_VERSION,

@@ -14,9 +14,11 @@ use std::str::FromStr;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
 
-use crate::chain::BlockHash;
-use crate::errors::ResultExt;
+use crate::chain::{genesis_hash, BlockHash};
+use crate::config::Config;
+use crate::errors::*;
 use crate::util::BlockId;
+use serde_json::Value;
 
 pub fn get_electrum_height(blockid: Option<BlockId>, has_unconfirmed_parents: bool) -> isize {
     match (blockid, has_unconfirmed_parents) {
@@ -99,6 +101,52 @@ impl std::fmt::Display for ProtocolVersion {
     }
 }
 
+/// Electrum protocol version compare (romanz/electrs 0.9.14+).
+pub fn protocol_in_range(ours: &str, min: &str, max: &str) -> crate::errors::Result<()> {
+    fn parse(version: &str) -> crate::errors::Result<Vec<usize>> {
+        version
+            .split('.')
+            .map(|part| {
+                part.parse::<usize>()
+                    .chain_err(|| format!("invalid protocol version {}", version))
+            })
+            .collect()
+    }
+    let version = parse(ours)?;
+    let min_v = parse(min)?;
+    let max_v = parse(max)?;
+    if version < min_v {
+        bail!("version {} < {}", ours, min);
+    }
+    if version > max_v {
+        bail!("version {} > {}", ours, max);
+    }
+    Ok(())
+}
+
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
+
+pub fn server_id() -> String {
+    format!("electrs-doge/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Electrum `server.features` body (also served on Esplora `GET /electrum/features`).
+pub fn local_server_features(config: &Config) -> Value {
+    let addr = config.electrum_rpc_addr;
+    json!({
+        "genesis_hash": genesis_hash(config.network_type),
+        "hosts": {
+            addr.ip().to_string(): { "tcp_port": addr.port() }
+        },
+        "protocol_max": PROTOCOL_VERSION,
+        "protocol_min": PROTOCOL_VERSION,
+        "pruning": Value::Null,
+        "server_version": server_id(),
+        "hash_function": "sha256",
+        "electrum_rpc": format!("tcp://{}", addr),
+    })
+}
+
 impl Serialize for ProtocolVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -115,5 +163,19 @@ impl<'de> Deserialize<'de> for ProtocolVersion {
     {
         let s = String::deserialize(deserializer)?;
         FromStr::from_str(&s).map_err(de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protocol_in_range;
+
+    #[test]
+    fn protocol_range_matches_romanz_0_9_14() {
+        assert!(protocol_in_range("1.4", "1.4", "1.4").is_ok());
+        assert!(protocol_in_range("1.4", "1.4", "1.5").is_ok());
+        assert!(protocol_in_range("1.4", "1.3", "1.4").is_ok());
+        assert!(protocol_in_range("1.4", "1.5", "1.5").is_err());
+        assert!(protocol_in_range("1.4", "1.3", "1.3").is_err());
     }
 }

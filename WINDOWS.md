@@ -55,6 +55,8 @@ reading blk file i/N ...
 
 Not healthy: `TRACE downloading 100000 block headers` or a full day of connection-refused.
 
+Electrum protocol matches [romanz/electrs](https://github.com/romanz/electrs) 0.11.1 **method surface** (v1.4): `server.features`, `scripthash.unsubscribe`, version negotiation, JSON-RPC error objects, `transaction.get` verbose, estimatefee `-1` when Core has no estimate. Not ported: `broadcast_package` (Dogecoin Core 1.14 has no `submitpackage`). Esplora: `GET http://127.0.0.1:3003/electrum/features`.
+
 ```powershell
 cd C:\Users\jheav\Desktop\dogeco\electrs-doge
 cargo build --release

@@ -553,6 +553,11 @@ impl Daemon {
         tx_from_value(value)
     }
 
+    /// Electrum `blockchain.transaction.get` verbose=true — Core decoded JSON.
+    pub fn getrawtransaction_verbose(&self, txid: &Txid) -> Result<Value> {
+        self.request("getrawtransaction", json!([txid, true]))
+    }
+
     pub fn getmempooltxids(&self) -> Result<HashSet<Txid>> {
         let res = self.request("getrawmempool", json!([/*verbose=*/ false]))?;
         Ok(serde_json::from_value(res).chain_err(|| "invalid getrawmempool reply")?)

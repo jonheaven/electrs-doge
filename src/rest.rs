@@ -624,6 +624,11 @@ fn handle_request(
             TTL_SHORT,
         ),
 
+        (&Method::GET, Some(&"electrum"), Some(&"features"), None, None, None) => json_response(
+            crate::electrum::local_server_features(config),
+            TTL_SHORT,
+        ),
+
         (&Method::GET, Some(&"blocks"), start_height, None, None, None) => {
             let start_height = start_height.and_then(|height| height.parse::<usize>().ok());
             blocks(&query, start_height)
