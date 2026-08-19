@@ -16,7 +16,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::chain::{genesis_hash, BlockHash};
 use crate::config::Config;
-use crate::errors::*;
+use crate::errors::ResultExt;
 use crate::util::BlockId;
 use serde_json::Value;
 
@@ -78,7 +78,7 @@ impl PartialOrd for ProtocolVersion {
 
 impl FromStr for ProtocolVersion {
     type Err = crate::errors::Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let mut iter = s.split('.');
         Ok(Self {
             major: iter
@@ -148,7 +148,7 @@ pub fn local_server_features(config: &Config) -> Value {
 }
 
 impl Serialize for ProtocolVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -157,7 +157,7 @@ impl Serialize for ProtocolVersion {
 }
 
 impl<'de> Deserialize<'de> for ProtocolVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
