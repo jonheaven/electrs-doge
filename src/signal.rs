@@ -80,7 +80,10 @@ impl Waiter {
                     self.wait_deadline(deadline, accept_sigusr)
                 }
             }
-            Ok(sig) => bail!(ErrorKind::Interrupt(sig)),
+            Ok(sig) => {
+                let _ = accept_sigusr;
+                bail!(ErrorKind::Interrupt(sig))
+            }
             Err(RecvTimeoutError::Timeout) => Ok(()),
             Err(RecvTimeoutError::Disconnected) => bail!("signal hook channel disconnected"),
         }
