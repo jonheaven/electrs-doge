@@ -83,8 +83,10 @@ dogenals tail electrs-doge
 
 ## Build
 
-```powershell
-cd electrs-doge
-cargo build --release
-.\scripts\bin\electrs-doge-launch.ps1
+```text
+electrs compile
+electrs-doge kill
+electrs-doge launch
 ```
+
+Or: `cd electrs-doge && cargo build --release`. `electrs compile` parks a running `electrs.exe` so the linker can write (same as `dogenals compile`). Does not stop Core.

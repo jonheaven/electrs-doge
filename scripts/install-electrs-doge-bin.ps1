@@ -70,8 +70,9 @@ Done. Prefer the full stack:
   set DOGENALS_SKIP_ELECTRS=1  # omit from dogenals launch
 
 Standalone:
+  electrs compile              # parks in-use electrs.exe, cargo build --release
+  electrs-doge compile         # same
   electrs-doge launch
-  electrs-doge-launch -Build
   electrs-doge-launch -FullMode   # full index when you have disk on a new PC
   electrs-doge kill
 

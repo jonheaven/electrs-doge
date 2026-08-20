@@ -46,3 +46,8 @@ Get-Process -Name electrs -ErrorAction SilentlyContinue | ForEach-Object {
 Stop-ElectrsOnPort $electrumPort
 Stop-ElectrsOnPort $httpPort
 Write-Host 'electrs-doge stopped.' -ForegroundColor Green
+
+$compilePs1 = Join-Path $PSScriptRoot 'electrs-doge-compile.ps1'
+if (Test-Path -LiteralPath $compilePs1) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $compilePs1 -CleanupParked
+}

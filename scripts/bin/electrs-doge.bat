@@ -27,6 +27,8 @@ if /I "%CMD%"=="up" goto :launch
 if /I "%CMD%"=="kill" goto :kill
 if /I "%CMD%"=="stop" goto :kill
 if /I "%CMD%"=="down" goto :kill
+if /I "%CMD%"=="compile" goto :compile
+if /I "%CMD%"=="build" goto :compile
 if /I "%CMD%"=="status" goto :status
 echo Unknown command: %CMD%
 echo.
@@ -36,10 +38,12 @@ goto :help
 echo electrs-doge - Electrum + Esplora HTTP for Dogecoin Core
 echo.
 echo Usage:
+echo   electrs-doge compile    release electrs.exe - parks in-use binary, does not stop Core
 echo   electrs-doge launch     start, logged when called from dogenals
 echo   electrs-doge kill       stop electrs.exe only - not Core, not port 3000
 echo   electrs-doge status     Electrum :50001 / HTTP :3003
 echo.
+echo Alias: electrs compile / launch / kill
 echo Full stack: dogenals launch
 echo Skip:       set DOGENALS_SKIP_ELECTRS=1
 echo HTTP:       http://127.0.0.1:3003  -^> https://electrs.command.dog
@@ -56,6 +60,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%LAUNCH_PS1%" %2 %3 %4
 exit /b %ERRORLEVEL%
 :missing_launch
 echo Missing %LAUNCH_PS1%
+exit /b 1
+
+:compile
+if exist "%SCRIPT_DIR%electrs-doge-compile.ps1" goto :compile_local
+set "COMPILE_PS1=%ELECTRS_ROOT%\scripts\bin\electrs-doge-compile.ps1"
+goto :compile_run
+:compile_local
+set "COMPILE_PS1=%SCRIPT_DIR%electrs-doge-compile.ps1"
+:compile_run
+if not exist "%COMPILE_PS1%" goto :missing_compile
+powershell -NoProfile -ExecutionPolicy Bypass -File "%COMPILE_PS1%"
+exit /b %ERRORLEVEL%
+:missing_compile
+echo Missing %COMPILE_PS1%
 exit /b 1
 
 :kill
