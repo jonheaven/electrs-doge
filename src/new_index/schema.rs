@@ -413,8 +413,8 @@ impl ChainQuery {
 
         if self.light_mode {
             let blockval = self.daemon.getblock_raw(hash, 0).ok()?;
-            let blockhex = blockval.as_str().expect("valid block from bitcoind");
-            Some(Vec::from_hex(blockhex).expect("valid block from bitcoind"))
+            let blockhex = blockval.as_str().expect("valid block from dogecoind");
+            Some(Vec::from_hex(blockhex).expect("valid block from dogecoind"))
         } else {
             let entry = self.header_by_hash(hash)?;
             let meta = self.get_block_meta(hash)?;
@@ -851,8 +851,8 @@ impl ChainQuery {
                 .daemon
                 .gettransaction_raw(txid, blockhash, false)
                 .ok()?;
-            let txhex = txval.as_str().expect("valid tx from bitcoind");
-            Some(Bytes::from_hex(txhex).expect("valid tx from bitcoind"))
+            let txhex = txval.as_str().expect("valid tx from dogecoind");
+            Some(Bytes::from_hex(txhex).expect("valid tx from dogecoind"))
         } else {
             self.store.txstore_db.get(&TxRow::key(&txid[..]))
         }

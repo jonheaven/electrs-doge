@@ -46,22 +46,21 @@ Electrs indexes **Dogecoin Core** (`dogecoin/` / `dogecoin-qt` RPC `:22555`). It
 1. **Core is down** — log is only `failed to connect daemon … os error 10061`. Restart Qt yourself; never from this repo.
 2. **`electrs.exe` is stale** — `target/release/electrs.exe` older than `src/daemon.rs` still uses Bitcoin-sized 50k `getblockheader` batches. AuxPoW replies from Core 1.14 never finish. Compile, then bounce **electrs only**.
 
-Healthy ingest after Core warmup (`-28` Loading block index is fine):
+Healthy ingest after Core warmup (`-28` Loading block index is fine). Electrs does **not** wait for Core IBD to finish — it indexes the validated tip and catches up.
 
 ```text
 downloading headers 0..=511 (512/TIP)
 reading blk file i/N ...
 ```
 
-Not healthy: `TRACE downloading 100000 block headers` or a full day of connection-refused.
+Not healthy: `TRACE downloading 100000 block headers`, a full day of connection-refused, or only `waiting for bitcoind/dogecoind sync` with no header download (old binary). Logs say **dogecoind**, not bitcoind.
 
 Electrum protocol matches [romanz/electrs](https://github.com/romanz/electrs) 0.11.1 **method surface** (v1.4): `server.features`, `scripthash.unsubscribe`, version negotiation, JSON-RPC error objects, `transaction.get` verbose, estimatefee `-1` when Core has no estimate. Not ported: `broadcast_package` (Dogecoin Core 1.14 has no `submitpackage`). Esplora: `GET http://127.0.0.1:3003/electrum/features`.
 
 ```powershell
-cd C:\Users\jheav\Desktop\dogeco\electrs-doge
-cargo build --release
-dogenals kill electrs
-dogenals launch electrs
+electrs compile
+electrs-doge kill
+electrs-doge launch
 dogenals tail electrs-doge
 ```
 
