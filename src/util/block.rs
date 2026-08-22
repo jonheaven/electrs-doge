@@ -1,4 +1,4 @@
-use crate::chain::{BlockHash, BlockHeader};
+use crate::chain::{compact_header, BlockHash, BlockHeader};
 use crate::errors::*;
 use crate::new_index::BlockEntry;
 
@@ -85,9 +85,20 @@ impl HeaderList {
     }
 
     pub fn new(
-        mut headers_map: HashMap<BlockHash, BlockHeader>,
+        headers_map: HashMap<BlockHash, BlockHeader>,
         tip_hash: BlockHash,
     ) -> HeaderList {
+        Self::try_new(headers_map, tip_hash).unwrap_or_else(|err| {
+            panic!("header chain broken at tip {:?}: {}", tip_hash, err)
+        })
+    }
+
+    /// Build a header list by walking `tip_hash` → genesis through `headers_map`.
+    /// Missing links return `Err` instead of aborting — caller can fill from Core.
+    pub fn try_new(
+        mut headers_map: HashMap<BlockHash, BlockHeader>,
+        tip_hash: BlockHash,
+    ) -> std::result::Result<HeaderList, String> {
         trace!(
             "processing {} headers, tip at {:?}",
             headers_map.len(),
@@ -98,14 +109,23 @@ impl HeaderList {
         let mut headers_chain: Vec<BlockHeader> = vec![];
 
         while blockhash != *DEFAULT_BLOCKHASH {
-            let header = headers_map.remove(&blockhash).unwrap_or_else(|| {
-                panic!(
-                    "missing expected blockhash in headers map: {:?}, pointed from: {:?}",
-                    blockhash,
-                    headers_chain.last().map(|h| h.block_hash())
-                )
-            });
+            let header = match headers_map.remove(&blockhash) {
+                Some(h) => compact_header(h),
+                None => {
+                    return Err(format!(
+                        "missing header {} ({} chained so far)",
+                        blockhash,
+                        headers_chain.len()
+                    ));
+                }
+            };
             blockhash = header.prev_blockhash;
+            if headers_chain.len() % 1_000_000 == 0 && !headers_chain.is_empty() {
+                info!(
+                    "chaining stored headers… {}",
+                    headers_chain.len()
+                );
+            }
             headers_chain.push(header);
         }
         headers_chain.reverse();
@@ -118,7 +138,7 @@ impl HeaderList {
 
         let mut headers = HeaderList::empty();
         headers.apply(headers.order(headers_chain));
-        headers
+        Ok(headers)
     }
 
     pub fn order(&self, new_headers: Vec<BlockHeader>) -> Vec<HeaderEntry> {

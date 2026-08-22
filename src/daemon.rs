@@ -17,7 +17,7 @@ use bitcoin::consensus::encode::{deserialize, serialize_hex};
 #[cfg(feature = "liquid")]
 use elements::encode::{deserialize, serialize_hex};
 
-use crate::chain::{Block, BlockHash, BlockHeader, Network, Transaction, Txid};
+use crate::chain::{compact_header, Block, BlockHash, BlockHeader, Network, Transaction, Txid};
 use crate::metrics::{HistogramOpts, HistogramVec, Metrics};
 use crate::signal::Waiter;
 use crate::util::{HeaderList, DEFAULT_BLOCKHASH};
@@ -477,6 +477,50 @@ impl Daemon {
         parse_hash(&self.request("getbestblockhash", json!([]))?)
     }
 
+    pub fn getblockhash(&self, height: usize) -> Result<BlockHash> {
+        parse_hash(&self.request("getblockhash", json!([height]))?)
+    }
+
+    pub fn header_tip_height(&self, tip: &BlockHash) -> Result<usize> {
+        let info: Value = self.request("getblockheader", json!([tip]))?;
+        Ok(info
+            .get("height")
+            .and_then(|h| h.as_u64())
+            .chain_err(|| format!("missing height for {}", tip))? as usize)
+    }
+
+    /// Batched `getblockheader` from `start_height` through `tip`.
+    /// `on_chunk` receives **full** AuxPoW headers so the indexer can persist them.
+    pub fn for_header_chunks<F>(
+        &self,
+        start_height: usize,
+        tip: &BlockHash,
+        mut on_chunk: F,
+    ) -> Result<()>
+    where
+        F: FnMut(usize, usize, usize, usize, Vec<BlockHeader>) -> Result<()>,
+    {
+        let tip_height = self.header_tip_height(tip)?;
+        if start_height > tip_height {
+            return Ok(());
+        }
+        let all_heights: Vec<usize> = (start_height..=tip_height).collect();
+        let total = tip_height + 1;
+        for heights in all_heights.chunks(HEADER_HEIGHT_CHUNK) {
+            let start = *heights.first().unwrap_or(&0);
+            let end = *heights.last().unwrap_or(&0);
+            let headers = self.getblockheaders(heights)?;
+            assert_eq!(headers.len(), heights.len());
+            let done = end + 1;
+            info!(
+                "downloading headers {}..={} ({}/{})",
+                start, end, done, total
+            );
+            on_chunk(start, end, done, total, headers)?;
+        }
+        Ok(())
+    }
+
     pub fn getblockheader(&self, blockhash: &BlockHash) -> Result<BlockHeader> {
         header_from_value(self.request("getblockheader", json!([blockhash, /*verbose=*/ false]))?)
     }
@@ -605,30 +649,11 @@ impl Daemon {
     }
 
     fn get_all_headers(&self, tip: &BlockHash) -> Result<Vec<BlockHeader>> {
-        let info: Value = self.request("getblockheader", json!([tip]))?;
-        let tip_height = info
-            .get("height")
-            .expect("missing height")
-            .as_u64()
-            .expect("non-numeric height") as usize;
-        let all_heights: Vec<usize> = (0..=tip_height).collect();
         let mut result = vec![];
-        let mut done = 0usize;
-        for heights in all_heights.chunks(HEADER_HEIGHT_CHUNK) {
-            let start = *heights.first().unwrap_or(&0);
-            let end = *heights.last().unwrap_or(&0);
-            info!(
-                "downloading headers {}..={} ({}/{})",
-                start,
-                end,
-                done + heights.len(),
-                tip_height + 1
-            );
-            let mut headers = self.getblockheaders(heights)?;
-            assert!(headers.len() == heights.len());
-            done += headers.len();
-            result.append(&mut headers);
-        }
+        self.for_header_chunks(0, tip, |_s, _e, _done, _total, headers| {
+            result.extend(headers.into_iter().map(compact_header));
+            Ok(())
+        })?;
 
         let mut blockhash = *DEFAULT_BLOCKHASH;
         for header in &result {
@@ -661,9 +686,10 @@ impl Daemon {
             if indexed_headers.header_by_blockhash(&blockhash).is_some() {
                 break;
             }
-            let header = self
-                .getblockheader(&blockhash)
-                .chain_err(|| format!("failed to get {} header", blockhash))?;
+            let header = compact_header(
+                self.getblockheader(&blockhash)
+                    .chain_err(|| format!("failed to get {} header", blockhash))?,
+            );
             blockhash = header.prev_blockhash;
             new_headers.push(header);
         }

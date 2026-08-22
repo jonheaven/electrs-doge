@@ -110,6 +110,20 @@ impl Network {
     }
 }
 
+/// Drop AuxPoW from an in-memory header. Block hash is the 80-byte header; Electrum
+/// merkle proofs only need that. Full AuxPoW stays in RocksDB `B{hash}` rows.
+/// Holding 6M+ AuxPoW blobs in `HeaderList` OOMs Windows after a disk-full restart.
+#[cfg(not(feature = "liquid"))]
+pub fn compact_header(mut header: BlockHeader) -> BlockHeader {
+    header.aux_data = None;
+    header
+}
+
+#[cfg(feature = "liquid")]
+pub fn compact_header(header: BlockHeader) -> BlockHeader {
+    header
+}
+
 pub fn genesis_hash(network: Network) -> BlockHash {
     #[cfg(not(feature = "liquid"))]
     return bitcoin_genesis_hash(network.into());

@@ -3,6 +3,7 @@ use rocksdb;
 use std::path::Path;
 
 use crate::config::Config;
+use crate::errors::*;
 use crate::util::{bincode, Bytes};
 
 static DB_VERSION: u32 = 1;
@@ -157,7 +158,12 @@ impl DB {
         }
     }
 
-    pub fn write(&self, mut rows: Vec<DBRow>, flush: DBFlush) {
+    pub fn write(&self, rows: Vec<DBRow>, flush: DBFlush) {
+        self.try_write(rows, flush)
+            .unwrap_or_else(|e| panic!("{}", e));
+    }
+
+    pub fn try_write(&self, mut rows: Vec<DBRow>, flush: DBFlush) -> Result<()> {
         debug!(
             "writing {} rows to {:?}, flush={:?}",
             rows.len(),
@@ -179,11 +185,22 @@ impl DB {
         let mut opts = rocksdb::WriteOptions::new();
         opts.set_sync(do_flush);
         opts.disable_wal(!do_flush);
-        self.db.write_opt(batch, &opts).unwrap();
+        self.db.write_opt(batch, &opts).chain_err(|| {
+            "RocksDB write failed. If the disk is full, free space and relaunch electrs — already-flushed blocks resume. Do not delete the electrs db."
+        })?;
+        Ok(())
     }
 
     pub fn flush(&self) {
-        self.db.flush().unwrap();
+        self.try_flush()
+            .unwrap_or_else(|e| panic!("{}", e));
+    }
+
+    pub fn try_flush(&self) -> Result<()> {
+        self.db.flush().chain_err(|| {
+            "RocksDB flush failed. If the disk is full, free space and relaunch electrs — already-flushed blocks resume. Do not delete the electrs db."
+        })?;
+        Ok(())
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {

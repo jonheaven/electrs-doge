@@ -49,11 +49,29 @@ Electrs indexes **Dogecoin Core** (`dogecoin/` / `dogecoin-qt` RPC `:22555`). It
 Healthy ingest after Core warmup (`-28` Loading block index is fine). Electrs does **not** wait for Core IBD to finish — it indexes the validated tip and catches up.
 
 ```text
-downloading headers 0..=511 (512/TIP)
-reading blk file i/N ...
+resume: 5276932 blocks already in txstore, 5276932 headers on disk — will not re-ingest those blocks
+stored prefix through height 5276931 / 6342730 (83.2%)
+header chain ready at height 5276931
+downloading headers 5276932..=5277443 (5277444/6342731)
+txstore checkpoint at height … — safe to interrupt
 ```
 
-Not healthy: `TRACE downloading 100000 block headers`, a full day of connection-refused, or only `waiting for bitcoind/dogecoind sync` with no header download (old binary). Logs say **dogecoind**, not bitcoind.
+Not healthy: `downloading headers 0..=511 (512/TIP)` **after** a previous run already ingested millions of blocks (tip cookie missing — fixed: it rebuilds from the stored prefix). Also not healthy: `TRACE downloading 100000 block headers`, a full day of connection-refused, or only `waiting for bitcoind/dogecoind sync` with no header download (old binary). Logs say **dogecoind**, not bitcoind.
+
+### Resume after disk full / kill
+
+Do **not** delete `F:\DogecoinData\electrs`. Free space, then bounce **electrs only**:
+
+```text
+electrs compile
+dogenals kill electrs
+dogenals launch electrs
+```
+
+- Header download writes `B{hash}` rows every 8k headers and flushes.
+- Txstore/history flush every 4096 blocks.
+- Tip cookie `t` is rewritten whenever the in-memory header chain is restored, not only at the end of a full update.
+- AuxPoW is stripped in RAM (block hash is the 80-byte header); full headers stay in RocksDB.
 
 Electrum protocol matches [romanz/electrs](https://github.com/romanz/electrs) 0.11.1 **method surface** (v1.4): `server.features`, `scripthash.unsubscribe`, version negotiation, JSON-RPC error objects, `transaction.get` verbose, estimatefee `-1` when Core has no estimate. Not ported: `broadcast_package` (Dogecoin Core 1.14 has no `submitpackage`). Esplora: `GET http://127.0.0.1:3003/electrum/features`.
 

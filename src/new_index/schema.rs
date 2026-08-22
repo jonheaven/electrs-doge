@@ -22,7 +22,8 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use crate::chain::{
-    BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
+    compact_header, BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid,
+    Value,
 };
 use crate::config::Config;
 use crate::daemon::Daemon;
@@ -30,7 +31,7 @@ use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramTimer, HistogramVec, MetricOpts, Metrics};
 use crate::util::{
     bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta,
-    BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr,
+    BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr, DEFAULT_BLOCKHASH,
 };
 
 use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
@@ -40,6 +41,10 @@ use crate::new_index::fetch::{start_fetcher, BlockEntry, FetchFrom};
 use crate::elements::{asset, peg};
 
 const MIN_HISTORY_ITEMS_TO_CACHE: usize = 100;
+/// Flush txstore/history memtables this often so a disk-full kill loses minutes, not days.
+const INGEST_FLUSH_BLOCKS: usize = 4096;
+/// Flush header blobs to RocksDB this often during RPC download.
+const HEADER_FLUSH_HEADERS: usize = 8192;
 
 pub struct Store {
     // TODO: should be column families
@@ -55,27 +60,47 @@ impl Store {
     pub fn open(path: &Path, config: &Config) -> Self {
         let txstore_db = DB::open(&path.join("txstore"), config);
         let added_blockhashes = load_blockhashes(&txstore_db, &BlockRow::done_filter());
-        debug!("{} blocks were added", added_blockhashes.len());
+        info!(
+            "{} blocks already in txstore (skipped on resume)",
+            added_blockhashes.len()
+        );
 
         let history_db = DB::open(&path.join("history"), config);
         let indexed_blockhashes = load_blockhashes(&history_db, &BlockRow::done_filter());
-        debug!("{} blocks were indexed", indexed_blockhashes.len());
+        info!(
+            "{} blocks already in history (skipped on resume)",
+            indexed_blockhashes.len()
+        );
 
         let cache_db = DB::open(&path.join("cache"), config);
         debug!("opened cache_db");
 
         let headers = if let Some(tip_hash) = txstore_db.get(b"t") {
-            debug!("loading blockheaders from db...");
             let tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
-            debug!("tip at {:?}", tip_hash);
+            info!("loading blockheaders from db, tip cookie={}", tip_hash);
             let headers_map = load_blockheaders(&txstore_db);
-            debug!(
-                "{} headers were loaded, tip at {:?}",
-                headers_map.len(),
-                tip_hash
-            );
-            HeaderList::new(headers_map, tip_hash)
+            info!("{} compact headers loaded from disk", headers_map.len());
+            match HeaderList::try_new(headers_map, tip_hash) {
+                Ok(list) => {
+                    info!("header chain restored at height {}", list.len().saturating_sub(1));
+                    list
+                }
+                Err(err) => {
+                    warn!(
+                        "tip cookie unusable ({}) — will rebuild from stored headers + Core",
+                        err
+                    );
+                    HeaderList::empty()
+                }
+            }
+        } else if added_blockhashes.is_empty() {
+            info!("fresh electrs db — header download starts at genesis (checkpointed to disk)");
+            HeaderList::empty()
         } else {
+            info!(
+                "tip cookie missing after interrupted run; {} txstore blocks still on disk — header chain rebuilt next, those blocks will not be re-ingested",
+                added_blockhashes.len()
+            );
             HeaderList::empty()
         };
 
@@ -223,6 +248,7 @@ impl Indexer {
         self.duration.with_label_values(&[name]).start_timer()
     }
 
+    #[allow(dead_code)]
     fn headers_to_add(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderEntry> {
         let added_blockhashes = self.store.added_blockhashes.read().unwrap();
         new_headers
@@ -232,6 +258,7 @@ impl Indexer {
             .collect()
     }
 
+    #[allow(dead_code)]
     fn headers_to_index(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderEntry> {
         let indexed_blockhashes = self.store.indexed_blockhashes.read().unwrap();
         new_headers
@@ -252,37 +279,320 @@ impl Indexer {
         db.enable_auto_compaction();
     }
 
-    fn get_new_headers(&self, daemon: &Daemon, tip: &BlockHash) -> Result<Vec<HeaderEntry>> {
-        let headers = self.store.indexed_headers.read().unwrap();
-        let new_headers = daemon.get_new_headers(&headers, &tip)?;
-        let result = headers.order(new_headers);
+    fn headers_missing(
+        &self,
+        new_headers: &[HeaderEntry],
+        have: &HashSet<BlockHash>,
+    ) -> Vec<HeaderEntry> {
+        let existing = self.store.indexed_headers.read().unwrap();
+        let mut out = Vec::new();
+        for entry in existing.iter() {
+            if !have.contains(entry.hash()) {
+                out.push(entry.clone());
+            }
+        }
+        drop(existing);
+        for entry in new_headers {
+            if !have.contains(entry.hash()) {
+                out.push(entry.clone());
+            }
+        }
+        out
+    }
 
-        if let Some(tip) = result.last() {
-            info!("{:?} ({} left to index)", tip, result.len());
+    fn persist_header_blobs(&self, headers: &[BlockHeader]) -> Result<()> {
+        if headers.is_empty() {
+            return Ok(());
+        }
+        let rows: Vec<DBRow> = headers
+            .iter()
+            .map(BlockRow::new_from_header)
+            .map(|row| row.into_row())
+            .collect();
+        self.store.txstore_db.try_write(rows, DBFlush::Disable)
+    }
+
+    fn install_header_list(&self, list: HeaderList) {
+        if list.is_empty() {
+            return;
+        }
+        let tip = *list.tip();
+        let height = list.len().saturating_sub(1);
+        *self.store.indexed_headers.write().unwrap() = list;
+        self.store.txstore_db.put_sync(b"t", &serialize(&tip));
+        info!("header chain ready at height {} tip={}", height, tip);
+    }
+
+    fn download_compact_headers(
+        &self,
+        daemon: &Daemon,
+        start_height: usize,
+        tip: &BlockHash,
+    ) -> Result<Vec<BlockHeader>> {
+        let mut out = Vec::new();
+        let mut since_flush = 0usize;
+        daemon.for_header_chunks(start_height, tip, |_s, _e, done, total, full| {
+            self.persist_header_blobs(&full)?;
+            since_flush += full.len();
+            if since_flush >= HEADER_FLUSH_HEADERS {
+                self.store.txstore_db.try_flush()?;
+                info!(
+                    "header checkpoint {}/{} flushed to disk (safe to interrupt)",
+                    done, total
+                );
+                since_flush = 0;
+            }
+            out.extend(full.into_iter().map(compact_header));
+            Ok(())
+        })?;
+        if since_flush > 0 {
+            self.store.txstore_db.try_flush()?;
+        }
+        Ok(out)
+    }
+
+    fn max_stored_height(
+        &self,
+        daemon: &Daemon,
+        map: &HashMap<BlockHash, BlockHeader>,
+        tip_height: usize,
+    ) -> Result<usize> {
+        let added = self.store.added_blockhashes.read().unwrap();
+        let stored = |hash: &BlockHash| added.contains(hash) || map.contains_key(hash);
+        let genesis = daemon.getblockhash(0)?;
+        if !stored(&genesis) {
+            return Ok(0);
+        }
+        let mut lo = 0usize;
+        let mut hi = tip_height;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            let hash = daemon.getblockhash(mid)?;
+            if stored(&hash) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Ok(lo)
+    }
+
+    fn fill_header_chain(
+        &self,
+        daemon: &Daemon,
+        mut map: HashMap<BlockHash, BlockHeader>,
+        tip_hash: BlockHash,
+    ) -> Result<HeaderList> {
+        let mut hash = tip_hash;
+        let mut rev = Vec::new();
+        let mut rpc = 0usize;
+        while hash != *DEFAULT_BLOCKHASH {
+            if let Some(header) = map.remove(&hash) {
+                let prev = header.prev_blockhash;
+                rev.push(header);
+                hash = prev;
+            } else {
+                let full = daemon
+                    .getblockheader(&hash)
+                    .chain_err(|| format!("failed to fill header {}", hash))?;
+                self.persist_header_blobs(&[full.clone()])?;
+                rpc += 1;
+                if rpc % 512 == 0 {
+                    info!("filling header gaps via Core ({} RPC so far)", rpc);
+                    self.store.txstore_db.try_flush()?;
+                }
+                let prev = full.prev_blockhash;
+                rev.push(compact_header(full));
+                hash = prev;
+            }
+            if rev.len() % 1_000_000 == 0 {
+                info!("walking stored header chain… {}", rev.len());
+            }
+        }
+        if rpc > 0 {
+            self.store.txstore_db.try_flush()?;
+            info!("filled {} missing headers from Core", rpc);
+        }
+        rev.reverse();
+        let mut list = HeaderList::empty();
+        let ordered = list.order(rev);
+        list.apply(ordered);
+        Ok(list)
+    }
+
+    fn recover_header_chain(&self, daemon: &Daemon, tip: &BlockHash) -> Result<()> {
+        {
+            let headers = self.store.indexed_headers.read().unwrap();
+            if !headers.is_empty() {
+                info!(
+                    "header chain already in memory (height {})",
+                    headers.len().saturating_sub(1)
+                );
+                return Ok(());
+            }
+        }
+
+        let added_n = self.store.added_blockhashes.read().unwrap().len();
+        let map = load_blockheaders(&self.store.txstore_db);
+        info!(
+            "resume: {} blocks already in txstore, {} headers on disk — will not re-ingest those blocks",
+            added_n,
+            map.len()
+        );
+
+        let tip_height = daemon.header_tip_height(tip)?;
+        if map.is_empty() && added_n == 0 {
+            info!("fresh db — downloading headers from genesis with disk checkpoints");
+            let chain = self.download_compact_headers(daemon, 0, tip)?;
+            let mut list = HeaderList::empty();
+            let ordered = list.order(chain);
+            list.apply(ordered);
+            self.install_header_list(list);
+            return Ok(());
+        }
+
+        let resume = self.max_stored_height(daemon, &map, tip_height)?;
+        info!(
+            "stored prefix through height {} / {} ({:.1}%)",
+            resume,
+            tip_height,
+            (resume as f64) * 100.0 / (tip_height.max(1) as f64)
+        );
+
+        let resume_hash = daemon.getblockhash(resume)?;
+        let list = if resume == 0 && !map.contains_key(&resume_hash) {
+            let chain = self.download_compact_headers(daemon, 0, tip)?;
+            let mut list = HeaderList::empty();
+            let ordered = list.order(chain);
+            list.apply(ordered);
+            list
+        } else if (resume as usize + 1) > map.len().saturating_mul(2) {
+            warn!(
+                "stored headers look sparse ({}/{}) — batched refill 0..={}",
+                map.len(),
+                resume + 1,
+                resume
+            );
+            let chain = self.download_compact_headers(daemon, 0, &resume_hash)?;
+            let mut list = HeaderList::empty();
+            let ordered = list.order(chain);
+            list.apply(ordered);
+            list
+        } else {
+            match HeaderList::try_new(map, resume_hash) {
+                Ok(list) => list,
+                Err(err) => {
+                    warn!("cannot chain stored headers ({}) — filling gaps", err);
+                    let map = load_blockheaders(&self.store.txstore_db);
+                    self.fill_header_chain(daemon, map, resume_hash)?
+                }
+            }
         };
+        self.install_header_list(list);
+        Ok(())
+    }
+
+    fn get_new_headers(&self, daemon: &Daemon, tip: &BlockHash) -> Result<Vec<HeaderEntry>> {
+        let (is_empty, our_height, our_tip) = {
+            let headers = self.store.indexed_headers.read().unwrap();
+            if headers.is_empty() {
+                (true, 0, *DEFAULT_BLOCKHASH)
+            } else {
+                (false, headers.len() - 1, *headers.tip())
+            }
+        };
+
+        if is_empty {
+            let chain = self.download_compact_headers(daemon, 0, tip)?;
+            let result = HeaderList::empty().order(chain);
+            if let Some(entry) = result.last() {
+                info!("{:?} ({} left to index)", entry, result.len());
+            }
+            return Ok(result);
+        }
+
+        let core_at = daemon.getblockhash(our_height)?;
+        if core_at == our_tip {
+            let chain = self.download_compact_headers(daemon, our_height + 1, tip)?;
+            let headers = self.store.indexed_headers.read().unwrap();
+            let result = headers.order(chain);
+            if let Some(entry) = result.last() {
+                info!("{:?} ({} left to index)", entry, result.len());
+            }
+            return Ok(result);
+        }
+
+        debug!("header reorg at height {}, walking back from tip", our_height);
+        let headers = self.store.indexed_headers.read().unwrap();
+        let new_headers = daemon.get_new_headers(&headers, tip)?;
+        let result = headers.order(new_headers);
+        if let Some(entry) = result.last() {
+            info!("{:?} ({} left to index)", entry, result.len());
+        }
         Ok(result)
     }
 
     pub fn update(&mut self, daemon: &Daemon) -> Result<BlockHash> {
         let daemon = daemon.reconnect()?;
         let tip = daemon.getbestblockhash()?;
+        self.recover_header_chain(&daemon, &tip)?;
         let new_headers = self.get_new_headers(&daemon, &tip)?;
 
-        let to_add = self.headers_to_add(&new_headers);
+        let to_add = {
+            let added = self.store.added_blockhashes.read().unwrap();
+            self.headers_missing(&new_headers, &added)
+        };
         info!(
-            "blk ingest: {} blocks via {:?} (txstore then history)",
+            "blk ingest: {} blocks via {:?} ({} already in txstore, skipped)",
             to_add.len(),
-            self.from
+            self.from,
+            {
+                let have = self.store.added_blockhashes.read().unwrap().len();
+                have
+            }
         );
-        start_fetcher(self.from, &daemon, to_add)?.map(|blocks| self.add(&blocks));
+        let mut since_flush = 0usize;
+        start_fetcher(self.from, &daemon, to_add)?.map(|blocks| {
+            self.add(&blocks);
+            since_flush += blocks.len();
+            if since_flush >= INGEST_FLUSH_BLOCKS {
+                self.store.txstore_db.flush();
+                if let Some(last) = blocks.last() {
+                    info!(
+                        "txstore checkpoint at height {} ({} blocks this flush) — safe to interrupt",
+                        last.entry.height(),
+                        since_flush
+                    );
+                }
+                since_flush = 0;
+            }
+        });
         self.start_auto_compactions(&self.store.txstore_db);
-        let to_index = self.headers_to_index(&new_headers);
-        debug!(
+
+        let to_index = {
+            let indexed = self.store.indexed_blockhashes.read().unwrap();
+            self.headers_missing(&new_headers, &indexed)
+        };
+        info!(
             "indexing history from {} blocks using {:?}",
             to_index.len(),
             self.from
         );
-        start_fetcher(self.from, &daemon, to_index)?.map(|blocks| self.index(&blocks));
+        since_flush = 0;
+        start_fetcher(self.from, &daemon, to_index)?.map(|blocks| {
+            self.index(&blocks);
+            since_flush += blocks.len();
+            if since_flush >= INGEST_FLUSH_BLOCKS {
+                self.store.history_db.flush();
+                if let Some(last) = blocks.last() {
+                    info!(
+                        "history checkpoint at height {} — safe to interrupt",
+                        last.entry.height()
+                    );
+                }
+                since_flush = 0;
+            }
+        });
         self.start_auto_compactions(&self.store.history_db);
         self.start_auto_compactions(&self.store.cache_db);
 
@@ -292,7 +602,6 @@ impl Indexer {
             self.store.history_db.flush();
             self.flush = DBFlush::Enable;
         }
-        // update the synced tip *after* the new data is flushed to disk
         debug!("updating synced tip to {:?}", tip);
         self.store.txstore_db.put_sync(b"t", &serialize(&tip));
 
@@ -965,21 +1274,13 @@ fn load_blockheaders(db: &DB) -> HashMap<BlockHash, BlockHeader> {
     db.iter_scan(&BlockRow::header_filter())
         .map(BlockRow::from_row)
         .enumerate()
-        .map(|(block_height, r)| {
+        .map(|(i, r)| {
             let key: BlockHash = deserialize(&r.key.hash).expect("failed to parse BlockHash");
             let value: BlockHeader = deserialize(&r.value).expect("failed to parse BlockHeader");
-            /* 
-            // HACK: to prevent out of memory issues, we remove the AuxPow data from the header for blocks before 14680000
-            // TODO: improve this to have the api return the full header by querying the database rather than using the hash map
-            if block_height < 14_680_000 {
-                value.aux_data = None;
+            if i > 0 && i % 1_000_000 == 0 {
+                info!("loaded {} compact headers into memory", i);
             }
-            */
-            if block_height % 1_000_000 == 0 {
-                info!("loaded block header at height {} into memory", block_height);
-            }
-
-            (key, value)
+            (key, compact_header(value))
         })
         .collect()
 }
@@ -1347,6 +1648,17 @@ struct BlockRow {
 }
 
 impl BlockRow {
+    fn new_from_header(header: &BlockHeader) -> BlockRow {
+        let hash = header.block_hash();
+        BlockRow {
+            key: BlockKey {
+                code: b'B',
+                hash: full_hash(&hash[..]),
+            },
+            value: serialize(header),
+        }
+    }
+
     fn new_header(block_entry: &BlockEntry) -> BlockRow {
         BlockRow {
             key: BlockKey {
