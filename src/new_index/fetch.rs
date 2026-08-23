@@ -117,12 +117,39 @@ fn bitcoind_fetcher(
     ))
 }
 
+fn send_rpc_blocks(
+    daemon: &Daemon,
+    entries: &[HeaderEntry],
+    sender: &std::sync::mpsc::SyncSender<Vec<BlockEntry>>,
+) {
+    for chunk in entries.chunks(100) {
+        let blockhashes: Vec<BlockHash> = chunk.iter().map(|e| *e.hash()).collect();
+        let blocks = daemon
+            .getblocks(&blockhashes)
+            .unwrap_or_else(|err| panic!("RPC fallback for blk*.dat misses failed: {}", err));
+        assert_eq!(blocks.len(), chunk.len());
+        let block_entries: Vec<BlockEntry> = blocks
+            .into_iter()
+            .zip(chunk)
+            .map(|(block, entry)| BlockEntry {
+                entry: entry.clone(),
+                size: block.total_size() as u32,
+                block,
+            })
+            .collect();
+        sender
+            .send(block_entries)
+            .expect("failed to send RPC-fallback blocks");
+    }
+}
+
 fn blkfiles_fetcher(
     daemon: &Daemon,
     new_headers: Vec<HeaderEntry>,
 ) -> Result<Fetcher<Vec<BlockEntry>>> {
     let magic = daemon.magic();
     let blk_files = daemon.list_blk_files()?;
+    let rpc = daemon.reconnect()?;
 
     let chan = SyncChannel::new(BLK_PIPELINE);
     let sender = chan.sender();
@@ -155,12 +182,22 @@ fn blkfiles_fetcher(
                     .send(block_entries)
                     .expect("failed to send blocks entries from blk*.dat files");
             });
-            if !entry_map.is_empty() {
-                panic!(
-                    "failed to index {} blocks from blk*.dat files",
-                    entry_map.len()
-                )
+            if entry_map.is_empty() {
+                return;
             }
+            // Core often has headers (and even `getblock`) for tip blocks that are
+            // not yet in the blk*.dat set we listed at start — last file still
+            // being appended, or the sequential reader stopped on padding/truncation.
+            // Panicking here aborts the whole ingest after hours of work.
+            let mut leftover: Vec<HeaderEntry> = entry_map.into_iter().map(|(_, e)| e).collect();
+            leftover.sort_by_key(|e| e.height());
+            warn!(
+                "{} blocks missing from blk*.dat (heights {}..{}); fetching via dogecoind RPC",
+                leftover.len(),
+                leftover.first().map(HeaderEntry::height).unwrap_or(0),
+                leftover.last().map(HeaderEntry::height).unwrap_or(0),
+            );
+            send_rpc_blocks(&rpc, &leftover, &sender);
         }),
     ))
 }
