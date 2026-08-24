@@ -126,8 +126,13 @@ impl Store {
         &self.cache_db
     }
 
+    /// JSON-RPC ingest is only for catching the tip. Bulk history must still
+    /// come from `blk*.dat`. The `t` cookie is the header tip (written as soon
+    /// as headers restore) — it does **not** mean history is done.
     pub fn done_initial_sync(&self) -> bool {
-        self.txstore_db.get(b"t").is_some()
+        let header_n = self.indexed_headers.read().unwrap().len();
+        let indexed_n = self.indexed_blockhashes.read().unwrap().len();
+        header_n > 1 && indexed_n + 64 >= header_n
     }
 }
 
@@ -269,10 +274,18 @@ impl Indexer {
     }
 
     fn start_auto_compactions(&self, db: &DB) {
-
         let key = b"F".to_vec();
         if db.get(&key).is_none() {
-            db.full_compaction();
+            // One-shot compact needs roughly 2× free space. After a disk-full
+            // resume it prints "There is not enough space on the disk" for
+            // half an hour and can take the volume down. Auto-compact is enough.
+            if std::env::var_os("ELECTRS_FULL_COMPACT").is_some() {
+                db.full_compaction();
+            } else {
+                info!(
+                    "skipping one-shot full compaction (auto-compact only; set ELECTRS_FULL_COMPACT=1 to force)"
+                );
+            }
             db.put_sync(&key, b"");
             assert!(db.get(&key).is_some());
         }
@@ -421,18 +434,22 @@ impl Indexer {
     }
 
     fn recover_header_chain(&self, daemon: &Daemon, tip: &BlockHash) -> Result<()> {
+        let added_n = self.store.added_blockhashes.read().unwrap().len();
         {
             let headers = self.store.indexed_headers.read().unwrap();
             if !headers.is_empty() {
-                info!(
-                    "header chain already in memory (height {})",
-                    headers.len().saturating_sub(1)
-                );
-                return Ok(());
+                let h = headers.len().saturating_sub(1);
+                // Store::open already chained these. Scanning RocksDB again is ~20 min
+                // of the same compact headers, not new work.
+                if added_n > 0 && h + 1 >= added_n {
+                    info!(
+                        "header chain already in memory (height {}); {} txstore blocks — tip catch-up only, skip disk rescan",
+                        h, added_n
+                    );
+                    return Ok(());
+                }
             }
         }
-
-        let added_n = self.store.added_blockhashes.read().unwrap().len();
         let map = load_blockheaders(&self.store.txstore_db);
         info!(
             "resume: {} blocks already in txstore, {} headers on disk — will not re-ingest those blocks",
@@ -452,6 +469,23 @@ impl Indexer {
         }
 
         let resume = self.max_stored_height(daemon, &map, tip_height)?;
+        {
+            let headers = self.store.indexed_headers.read().unwrap();
+            if !headers.is_empty() {
+                let h = headers.len().saturating_sub(1);
+                if h >= resume {
+                    info!(
+                        "header chain already in memory (height {}); disk/txstore prefix {} — tip catch-up only",
+                        h, resume
+                    );
+                    return Ok(());
+                }
+                info!(
+                    "in-memory headers stop at {}, disk/txstore prefix {} — restore from disk, do not re-download",
+                    h, resume
+                );
+            }
+        }
         info!(
             "stored prefix through height {} / {} ({:.1}%)",
             resume,
@@ -573,13 +607,24 @@ impl Indexer {
             let indexed = self.store.indexed_blockhashes.read().unwrap();
             self.headers_missing(&new_headers, &indexed)
         };
+        let history_from = if to_index.len() > 10_000 {
+            if !matches!(self.from, FetchFrom::BlkFiles) {
+                info!(
+                    "history is {} blocks behind — using blk*.dat, not JSON-RPC",
+                    to_index.len()
+                );
+            }
+            FetchFrom::BlkFiles
+        } else {
+            self.from
+        };
         info!(
             "indexing history from {} blocks using {:?}",
             to_index.len(),
-            self.from
+            history_from
         );
         since_flush = 0;
-        start_fetcher(self.from, &daemon, to_index)?.map(|blocks| {
+        start_fetcher(history_from, &daemon, to_index)?.map(|blocks| {
             self.index(&blocks);
             since_flush += blocks.len();
             if since_flush >= INGEST_FLUSH_BLOCKS {
