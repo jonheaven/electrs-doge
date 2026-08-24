@@ -60,6 +60,8 @@ Not healthy: `downloading headers 0..=511 (512/TIP)` **after** a previous run al
 
 `failed to index N blocks from blk*.dat files` then process exit: the sequential `blk*.dat` scan finished but ~N tip headers were not in those files (Core still appending the last file, or the reader stopped on padding). **Old binaries panic.** Current `fetch.rs` pulls those leftovers from dogecoind RPC and keeps going. Compile + bounce **electrs only**.
 
+Fewer than ~10k missing blocks (tip catch-up) go through dogecoind RPC. A full `blk*.dat` scan is only for bulk **history**. Do not expect `skipping block` spam — that was TRACE of every already-in-txstore hash.
+
 ### Resume after disk full / kill
 
 Do **not** delete `F:\DogecoinData\electrs`. Free space, then bounce **electrs only**:

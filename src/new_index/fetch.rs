@@ -168,10 +168,6 @@ fn blkfiles_fetcher(
                         entry_map
                             .remove(&blockhash)
                             .map(|entry| BlockEntry { block, entry, size })
-                            .or_else(|| {
-                                trace!("skipping block {}", blockhash);
-                                None
-                            })
                     })
                     .collect();
                 if block_entries.is_empty() {

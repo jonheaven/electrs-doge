@@ -576,17 +576,22 @@ impl Indexer {
             let added = self.store.added_blockhashes.read().unwrap();
             self.headers_missing(&new_headers, &added)
         };
+        let add_from = if to_add.len() > 10_000 {
+            FetchFrom::BlkFiles
+        } else {
+            FetchFrom::Bitcoind
+        };
         info!(
             "blk ingest: {} blocks via {:?} ({} already in txstore, skipped)",
             to_add.len(),
-            self.from,
+            add_from,
             {
                 let have = self.store.added_blockhashes.read().unwrap().len();
                 have
             }
         );
         let mut since_flush = 0usize;
-        start_fetcher(self.from, &daemon, to_add)?.map(|blocks| {
+        start_fetcher(add_from, &daemon, to_add)?.map(|blocks| {
             self.add(&blocks);
             since_flush += blocks.len();
             if since_flush >= INGEST_FLUSH_BLOCKS {
