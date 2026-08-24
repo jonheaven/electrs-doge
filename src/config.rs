@@ -31,6 +31,8 @@ pub struct Config {
     pub http_socket_file: Option<PathBuf>,
     pub monitoring_addr: SocketAddr,
     pub jsonrpc_import: bool,
+    /// `GET /block-template` (Core `getblocktemplate`). Off by default, same as Blockstream electrs.
+    pub enable_mining_rest: bool,
     pub light_mode: bool,
     pub address_search: bool,
     pub index_unspendables: bool,
@@ -142,6 +144,11 @@ impl Config {
                 Arg::with_name("jsonrpc_import")
                     .long("jsonrpc-import")
                     .help("Use JSONRPC instead of directly importing blk*.dat files. Useful for remote full node or low memory system"),
+            )
+            .arg(
+                Arg::with_name("enable_mining_rest")
+                    .long("enable-mining-rest")
+                    .help("Expose GET /block-template (Dogecoin Core getblocktemplate). Off by default."),
             )
             .arg(
                 Arg::with_name("light_mode")
@@ -398,6 +405,7 @@ impl Config {
             http_socket_file,
             monitoring_addr,
             jsonrpc_import: m.is_present("jsonrpc_import"),
+            enable_mining_rest: m.is_present("enable_mining_rest"),
             light_mode: m.is_present("light_mode"),
             address_search: m.is_present("address_search"),
             index_unspendables: m.is_present("index_unspendables"),

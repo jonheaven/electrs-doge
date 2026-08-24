@@ -97,6 +97,7 @@ impl TestRunner {
             http_socket_file: None, // XXX test with socket file or tcp?
             monitoring_addr: rand_available_addr(),
             jsonrpc_import: false,
+            enable_mining_rest: false,
             light_mode: false,
             address_search: true,
             index_unspendables: false,

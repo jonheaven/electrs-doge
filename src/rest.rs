@@ -629,6 +629,19 @@ fn handle_request(
             TTL_SHORT,
         ),
 
+        (&Method::GET, Some(&"block-template"), None, None, None, None) => {
+            if !config.enable_mining_rest {
+                return json_status(
+                    StatusCode::FORBIDDEN,
+                    json!({
+                        "error": "forbidden",
+                        "message": "mining REST endpoints are disabled; start electrs with --enable-mining-rest",
+                    }),
+                );
+            }
+            json_response_no_store(query.getblocktemplate()?)
+        }
+
         (&Method::GET, Some(&"blocks"), start_height, None, None, None) => {
             let start_height = start_height.and_then(|height| height.parse::<usize>().ok());
             blocks(&query, start_height)
@@ -1005,6 +1018,13 @@ fn handle_request(
                 .map_err(|err| HttpError::from(err.description().to_string()))?;
             http_message(StatusCode::OK, txid.to_string(), 0)
         }
+        (&Method::POST, Some(&"txs"), Some(&"package"), None, None, None) => json_status(
+            StatusCode::NOT_IMPLEMENTED,
+            json!({
+                "error": "not_implemented",
+                "message": "POST /txs/package needs Bitcoin Core 28+ submitpackage; Dogecoin Core 1.14 has no equivalent. Broadcast dependent txs in order via POST /tx.",
+            }),
+        ),
 
         (&Method::GET, Some(&"mempool"), None, None, None, None) => {
             json_response(query.mempool().backlog_stats(), TTL_SHORT)
@@ -1163,6 +1183,25 @@ fn json_response<T: Serialize>(value: T, ttl: u32) -> Result<Response<Body>, Htt
     Ok(Response::builder()
         .header("Content-Type", "application/json")
         .header("Cache-Control", format!("public, max-age={:}", ttl))
+        .body(Body::from(value))
+        .unwrap())
+}
+
+fn json_response_no_store<T: Serialize>(value: T) -> Result<Response<Body>, HttpError> {
+    let value = serde_json::to_string(&value)?;
+    Ok(Response::builder()
+        .header("Content-Type", "application/json")
+        .header("Cache-Control", "no-store")
+        .body(Body::from(value))
+        .unwrap())
+}
+
+fn json_status<T: Serialize>(status: StatusCode, value: T) -> Result<Response<Body>, HttpError> {
+    let value = serde_json::to_string(&value)?;
+    Ok(Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Cache-Control", "no-store")
         .body(Body::from(value))
         .unwrap())
 }

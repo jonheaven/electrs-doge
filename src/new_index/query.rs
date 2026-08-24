@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::chain::{Network, OutPoint, Transaction, TxOut, Txid};
+use crate::chain::{BlockHash, Network, OutPoint, Transaction, TxOut, Txid};
 use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::errors::*;
@@ -33,6 +33,8 @@ pub struct Query {
     config: Arc<Config>,
     cached_estimates: RwLock<(HashMap<u16, f64>, Option<Instant>)>,
     cached_relayfee: RwLock<Option<f64>>,
+    /// `(tip, fetched_at, template)` — 15s TTL, dropped when the chain tip moves.
+    cached_block_template: RwLock<Option<(BlockHash, Instant, Value)>>,
     #[cfg(feature = "liquid")]
     asset_db: Option<Arc<RwLock<AssetRegistry>>>,
 }
@@ -52,6 +54,7 @@ impl Query {
             config,
             cached_estimates: RwLock::new((HashMap::new(), None)),
             cached_relayfee: RwLock::new(None),
+            cached_block_template: RwLock::new(None),
         }
     }
 
@@ -78,6 +81,23 @@ impl Query {
             .unwrap()
             .add_by_txid(&self.daemon, &txid);
         Ok(txid)
+    }
+
+    /// BIP 22 `getblocktemplate`. Cached 15s and dropped when the indexed tip moves
+    /// (Blockstream esplora `GET /block-template`).
+    pub fn getblocktemplate(&self) -> Result<Value> {
+        let tip = self.chain.best_hash();
+        {
+            let cached = self.cached_block_template.read().unwrap();
+            if let Some((hash, ts, val)) = cached.as_ref() {
+                if *hash == tip && ts.elapsed() < Duration::from_secs(15) {
+                    return Ok(val.clone());
+                }
+            }
+        }
+        let val = self.daemon.getblocktemplate()?;
+        *self.cached_block_template.write().unwrap() = Some((tip, Instant::now(), val.clone()));
+        Ok(val)
     }
 
     pub fn utxo(&self, scripthash: &[u8]) -> Result<Vec<Utxo>> {
@@ -235,6 +255,7 @@ impl Query {
             asset_db,
             cached_estimates: RwLock::new((HashMap::new(), None)),
             cached_relayfee: RwLock::new(None),
+            cached_block_template: RwLock::new(None),
         }
     }
 

@@ -614,6 +614,11 @@ impl Daemon {
         )
     }
 
+    /// BIP 22 template mode. Do not pass Bitcoin `rules: ["segwit"]` — Dogecoin Core 1.14 rejects it.
+    pub fn getblocktemplate(&self) -> Result<Value> {
+        self.request("getblocktemplate", json!([{"mode": "template"}]))
+    }
+
     // Get estimated feerates for the provided confirmation targets using a batch RPC request
     // Missing estimates are logged but do not cause a failure, whatever is available is returned
     #[allow(clippy::float_cmp)]

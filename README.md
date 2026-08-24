@@ -6,6 +6,8 @@ Used as the backend for the [Esplora block explorer](https://github.com/Blockstr
 
 API documentation [is available here](https://github.com/blockstream/esplora/blob/master/API.md).
 
+Dogecoin fork deltas (`POST /txs/package` 501, `GET /block-template`, RocksDB ingest knobs): [WINDOWS.md](WINDOWS.md). Local Blockstream clone: `../ref/esplora/`.
+
 Documentation for the database schema and indexing process [is available here](doc/schema.md).
 
 ### Installing & indexing

@@ -86,20 +86,24 @@ impl DB {
         debug!("opening DB at {:?}", path);
         let mut db_opts = rocksdb::Options::default();
         db_opts.create_if_missing(true);
-        db_opts.set_max_open_files(100_000); // TODO: make sure to `ulimit -n` this process correctly
+        // Cap SST fds (Blockstream default 100_000). History ingest on Windows otherwise
+        // holds tens of thousands of 1 GiB files and needs ~20 GB extra slack to compact.
+        // 256 matches addrindexrs-dc after bulk import.
+        db_opts.set_max_open_files(256);
         db_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         db_opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
-        db_opts.set_target_file_size_base(1_073_741_824);
+        db_opts.set_target_file_size_base(256 << 20); // 256 MiB SST (was 1 GiB)
         db_opts.set_write_buffer_size(256 << 20);
         db_opts.set_disable_auto_compactions(true); // for initial bulk load
+        db_opts.set_advise_random_on_open(false); // sequential blk*.dat ingest
         debug!("configured rocksdb options at {:?}", path);
-        // db_opts.set_advise_random_on_open(???);
         db_opts.set_compaction_readahead_size(4 << 20);
         let parallelism = num_cpus::get().max(2) as i32;
         db_opts.increase_parallelism(parallelism);
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        block_opts.set_block_size(1 << 20);
+        db_opts.set_block_based_table_factory(&block_opts);
         debug!("finalized rocksdb options at {:?}", path);
-        // let mut block_opts = rocksdb::BlockBasedOptions::default();
-        // block_opts.set_block_size(???);
 
         debug!("running rocksdb open at {:?}", path);
         let db = DB {

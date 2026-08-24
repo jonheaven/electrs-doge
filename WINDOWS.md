@@ -37,7 +37,7 @@ dogex is the metaprotocol indexer. Useful **I/O** ideas, not its protocol index:
 
 `--lightmode` stays the launch default (faster ingest; queries hit Core). `--jsonrpc-import` is slower; keep `FetchFrom::BlkFiles` after headers.
 
-This fork: header batches of 64, pipeline depth 2, reused parse pool, sequential 32 MiB batches, RocksDB `increase_parallelism(num_cpus)`, compaction readahead 4 MiB.
+This fork: header batches of 64, pipeline depth 2, reused parse pool, sequential 32 MiB batches, RocksDB `increase_parallelism(num_cpus)`, compaction readahead 4 MiB, **256 MiB SST** (`target_file_size_base`), `max_open_files=256`, sequential `advise_random_on_open(false)`, 1 MiB table blocks. Those last knobs come from `ref/addrindexrs-dc` so history ingest does not need another ~20 GB of free disk.
 
 ## Runtime (this PC)
 
@@ -77,7 +77,22 @@ dogenals launch electrs
 - Tip cookie `t` is rewritten whenever the in-memory header chain is restored, not only at the end of a full update.
 - AuxPoW is stripped in RAM (block hash is the 80-byte header); full headers stay in RocksDB.
 
-Electrum protocol matches [romanz/electrs](https://github.com/romanz/electrs) 0.11.1 **method surface** (v1.4): `server.features`, `scripthash.unsubscribe`, version negotiation, JSON-RPC error objects, `transaction.get` verbose, estimatefee `-1` when Core has no estimate. Not ported: `broadcast_package` (Dogecoin Core 1.14 has no `submitpackage`). Esplora: `GET http://127.0.0.1:3003/electrum/features`.
+Electrum protocol matches [romanz/electrs](https://github.com/romanz/electrs) 0.11.1 **method surface** (v1.4): `server.features`, `scripthash.unsubscribe`, version negotiation, JSON-RPC error objects, `transaction.get` verbose, estimatefee `-1` when Core has no estimate. Electrum `broadcast_package` is **not** implemented (Dogecoin Core 1.14 has no `submitpackage`). Esplora extras: `GET http://127.0.0.1:3003/electrum/features`.
+
+### Esplora HTTP vs Blockstream [API.md](https://github.com/Blockstream/esplora/blob/master/API.md)
+
+Local clone: `ref/esplora/` (frontend + `API.md`). electrs-doge stays **sync hyper 0.14** — do not rewrite the server to Blockstream’s tokio rest.rs.
+
+Bitcoin / Dogecoin routes match that spec (`/tx`, `/address`, `/scripthash`, `/block`, `/blocks`, `/mempool`, `/fee-estimates`, `POST /tx`). Liquid-only `/asset*` stays behind `feature = "liquid"`.
+
+Deliberate Dogecoin deltas:
+
+| Endpoint | Blockstream | This fork |
+|---|---|---|
+| `POST /txs/package` | Core 28+ `submitpackage` | **501** JSON (`not_implemented`). Broadcast dependent txs in order via `POST /tx`. |
+| `GET /block-template` | `--enable-mining-rest` → Core `getblocktemplate` (cached 15s, `Cache-Control: no-store`) | Same flag. Default **off**. Uses BIP 22 `{"mode":"template"}` — **no** Bitcoin `rules: ["segwit"]`. |
+
+Do not enable `--enable-mining-rest` on the public tunnel unless you want miners hitting Core.
 
 ```powershell
 electrs compile
