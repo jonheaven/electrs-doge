@@ -20,6 +20,7 @@ use elements::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use crate::chain::{
     compact_header, BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid,
@@ -61,8 +62,9 @@ impl Store {
         let txstore_db = DB::open(&path.join("txstore"), config);
         let added_blockhashes = load_blockhashes(&txstore_db, &BlockRow::done_filter());
         info!(
-            "{} blocks already in txstore (skipped on resume)",
-            added_blockhashes.len()
+            "{} blocks already in txstore (skipped on resume) [{}]",
+            added_blockhashes.len(),
+            txstore_db.level_file_summary()
         );
 
         let history_db = DB::open(&path.join("history"), config);
@@ -619,6 +621,9 @@ impl Indexer {
                     to_index.len()
                 );
             }
+            // Prevout lookups against hundreds of overlapping L0 SSTs on HDD
+            // read ~100 MB/s and never finish. Compact first so the tail moves.
+            self.store.txstore_db.wait_until_l0_drained();
             FetchFrom::BlkFiles
         } else {
             self.from
@@ -688,10 +693,24 @@ impl Indexer {
 
     fn index(&self, blocks: &[BlockEntry]) {
         log_blk_batch("history", blocks);
+        let t0 = Instant::now();
+        let prevouts = get_previous_txos(blocks);
+        let n_prev = prevouts.len();
         let previous_txos_map = {
             let _timer = self.start_timer("index_lookup");
-            lookup_txos(&self.store.txstore_db, &get_previous_txos(blocks), false)
+            lookup_txos(&self.store.txstore_db, &prevouts, false)
         };
+        let lookup_dt = t0.elapsed();
+        if let (Some(first), Some(last)) = (blocks.first(), blocks.last()) {
+            info!(
+                "history heights {}..={} ({} blocks, {} prevouts, lookup {:?})",
+                first.entry.height(),
+                last.entry.height(),
+                blocks.len(),
+                n_prev,
+                lookup_dt
+            );
+        }
         let rows = {
             let _timer = self.start_timer("index_process");
             let added_blockhashes = self.store.added_blockhashes.read().unwrap();
@@ -1418,29 +1437,54 @@ fn get_previous_txos(block_entries: &[BlockEntry]) -> BTreeSet<OutPoint> {
         .collect()
 }
 
+fn lookup_thread_count() -> usize {
+    std::env::var("ELECTRS_LOOKUP_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2)
+        .clamp(1, 16)
+}
+
+fn lookup_one(
+    txstore_db: &DB,
+    outpoint: &OutPoint,
+    allow_missing: bool,
+) -> Option<(OutPoint, TxOut)> {
+    lookup_txo(txstore_db, outpoint)
+        .or_else(|| {
+            if !allow_missing {
+                panic!("missing txo {} in {:?}", outpoint, txstore_db);
+            }
+            None
+        })
+        .map(|txo| (*outpoint, txo))
+}
+
 fn lookup_txos(
     txstore_db: &DB,
     outpoints: &BTreeSet<OutPoint>,
     allow_missing: bool,
 ) -> HashMap<OutPoint, TxOut> {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(16) // we need to saturate SSD IOPS
-        .thread_name(|i| format!("lookup-txo-{}", i))
-        .build()
-        .unwrap();
-    pool.install(|| {
+    // 16-way random gets on a 1 TB HDD destroy sorted key locality and starve
+    // compaction. Default 2; set ELECTRS_LOOKUP_THREADS=8 on NVMe.
+    let threads = lookup_thread_count();
+    if threads <= 1 || outpoints.len() < 8 {
+        return outpoints
+            .iter()
+            .filter_map(|op| lookup_one(txstore_db, op, allow_missing))
+            .collect();
+    }
+    lazy_static! {
+        static ref LOOKUP_POOL: rayon::ThreadPool = rayon::ThreadPoolBuilder::new()
+            .num_threads(lookup_thread_count())
+            .thread_name(|i| format!("lookup-txo-{}", i))
+            .build()
+            .unwrap();
+    }
+    LOOKUP_POOL.install(|| {
         outpoints
             .par_iter()
-            .filter_map(|outpoint| {
-                lookup_txo(&txstore_db, &outpoint)
-                    .or_else(|| {
-                        if !allow_missing {
-                            panic!("missing txo {} in {:?}", outpoint, txstore_db);
-                        }
-                        None
-                    })
-                    .map(|txo| (*outpoint, txo))
-            })
+            .filter_map(|outpoint| lookup_one(txstore_db, outpoint, allow_missing))
             .collect()
     })
 }

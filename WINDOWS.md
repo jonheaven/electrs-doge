@@ -37,7 +37,9 @@ dogex is the metaprotocol indexer. Useful **I/O** ideas, not its protocol index:
 
 `--lightmode` stays the launch default (faster ingest; queries hit Core). `--jsonrpc-import` is slower; keep `FetchFrom::BlkFiles` after headers.
 
-This fork: header batches of 64, pipeline depth 2, reused parse pool, sequential 32 MiB batches, RocksDB `increase_parallelism(num_cpus)`, compaction readahead 4 MiB, **256 MiB SST** (`target_file_size_base`), `max_open_files=256`, sequential `advise_random_on_open(false)`, 1 MiB table blocks. Those last knobs come from `ref/addrindexrs-dc` so history ingest does not need another ~20 GB of free disk.
+This fork: header batches of 64, pipeline depth 2, reused parse pool, sequential 32 MiB batches, RocksDB `increase_parallelism(num_cpus)`, compaction readahead 4 MiB, **256 MiB SST**, `max_open_files=1024`, **bloom + 256 MiB block cache**, 32 KiB table blocks on newly compacted files, `advise_random_on_open(true)` (history lookups are random). After txstore ingest, electrs **waits for L0 to drain** before history prevout lookups.
+
+**History looks frozen (this PC):** txstore can sit at ~75 GB / ~900 SST files on the **F: WD Blue HDD**. Electrum/HTTP do not bind until history is done. A `dogenals tail electrs` stuck on `reading blk file 1/1353` with no new INFO lines means history `get()` is scanning every overlapping L0 file (~100 MB/s reads, ~0 writes, ~2 batches/night). Not a hung process — unusable I/O. Current binary compact-waits first (log: `compacting txstore before history (L0=…)` every 30s) then logs `history heights A..=B (N blocks, P prevouts, lookup …)` per batch.
 
 ## Runtime (this PC)
 

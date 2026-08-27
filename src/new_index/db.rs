@@ -1,6 +1,7 @@
 use rocksdb;
 
 use std::path::Path;
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::errors::*;
@@ -86,22 +87,29 @@ impl DB {
         debug!("opening DB at {:?}", path);
         let mut db_opts = rocksdb::Options::default();
         db_opts.create_if_missing(true);
-        // Cap SST fds (Blockstream default 100_000). History ingest on Windows otherwise
-        // holds tens of thousands of 1 GiB files and needs ~20 GB extra slack to compact.
-        // 256 matches addrindexrs-dc after bulk import.
-        db_opts.set_max_open_files(256);
+        // History prevout lookups are random. 256 fds + 935 overlapping L0 SSTs on a
+        // spinning disk made each get() re-open files and scan every L0 SST.
+        db_opts.set_max_open_files(1024);
         db_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         db_opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
         db_opts.set_target_file_size_base(256 << 20); // 256 MiB SST (was 1 GiB)
         db_opts.set_write_buffer_size(256 << 20);
         db_opts.set_disable_auto_compactions(true); // for initial bulk load
-        db_opts.set_advise_random_on_open(false); // sequential blk*.dat ingest
+        // Random gets (history O{txid} lookups), not sequential blk ingest.
+        db_opts.set_advise_random_on_open(true);
         debug!("configured rocksdb options at {:?}", path);
         db_opts.set_compaction_readahead_size(4 << 20);
         let parallelism = num_cpus::get().max(2) as i32;
         db_opts.increase_parallelism(parallelism);
         let mut block_opts = rocksdb::BlockBasedOptions::default();
-        block_opts.set_block_size(1 << 20);
+        // 1 MiB blocks + no bloom: each miss on HDD reads 1 MiB from every L0 file.
+        // New SSTs after compaction use 32 KiB + bloom; existing files rewrite on compact.
+        block_opts.set_block_size(32 << 10);
+        block_opts.set_bloom_filter(10.0, false);
+        let cache = rocksdb::Cache::new_lru_cache(256 * 1024 * 1024);
+        block_opts.set_block_cache(&cache);
+        block_opts.set_cache_index_and_filter_blocks(true);
+        block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
         db_opts.set_block_based_table_factory(&block_opts);
         debug!("finalized rocksdb options at {:?}", path);
 
@@ -125,6 +133,67 @@ impl DB {
     pub fn enable_auto_compaction(&self) {
         let opts = [("disable_auto_compactions", "false")];
         self.db.set_options(&opts).unwrap();
+    }
+
+    pub fn files_at_level(&self, level: u32) -> u64 {
+        let prop = format!("rocksdb.num-files-at-level{}", level);
+        self.db.property_int_value(prop).ok().flatten().unwrap_or(0)
+    }
+
+    pub fn level_file_summary(&self) -> String {
+        (0..7)
+            .map(|lvl| format!("L{}={}", lvl, self.files_at_level(lvl)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// History prevout `get()` searches every overlapping L0 SST. On an HDD with
+    /// ~900 L0 files that is ~100 MB/s of random reads and years of wall time.
+    /// Drain L0 (compaction gets the disk *without* lookups fighting it) first.
+    pub fn wait_until_l0_drained(&self) {
+        self.enable_auto_compaction();
+        const TARGET_L0: u64 = 16;
+        const STALL_TICKS: u32 = 40; // 20 min with no L0 drop
+        let levels_total: u64 = (0..7).map(|lvl| self.files_at_level(lvl)).sum();
+        if levels_total == 0 {
+            warn!(
+                "txstore level file counts are all 0 — RocksDB properties unavailable? cannot wait on L0"
+            );
+            return;
+        }
+        let mut last = u64::MAX;
+        let mut stalled = 0u32;
+        loop {
+            let l0 = self.files_at_level(0);
+            if l0 <= TARGET_L0 {
+                info!(
+                    "txstore ready for history lookups ({}, L0={})",
+                    self.level_file_summary(),
+                    l0
+                );
+                return;
+            }
+            if l0 >= last {
+                stalled += 1;
+            } else {
+                stalled = 0;
+            }
+            info!(
+                "compacting txstore before history ({} ; L0 {} → ≤{}) — do not expect Electrum/HTTP until this finishes",
+                self.level_file_summary(),
+                l0,
+                TARGET_L0
+            );
+            if stalled >= STALL_TICKS {
+                warn!(
+                    "txstore L0 stuck at {} for 20m (disk space or compaction stall). Starting history anyway.",
+                    l0
+                );
+                return;
+            }
+            last = l0;
+            std::thread::sleep(Duration::from_secs(30));
+        }
     }
 
     pub fn raw_iterator(&self) -> rocksdb::DBRawIterator<'_> {
