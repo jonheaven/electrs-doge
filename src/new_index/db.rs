@@ -137,7 +137,7 @@ impl DB {
 
     pub fn files_at_level(&self, level: u32) -> u64 {
         let prop = format!("rocksdb.num-files-at-level{}", level);
-        self.db.property_int_value(prop).ok().flatten().unwrap_or(0)
+        self.db.property_int_value(&prop).ok().flatten().unwrap_or(0)
     }
 
     pub fn level_file_summary(&self) -> String {
