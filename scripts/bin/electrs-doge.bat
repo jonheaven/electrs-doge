@@ -39,13 +39,14 @@ echo electrs-doge - Electrum + Esplora HTTP for Dogecoin Core
 echo.
 echo Usage:
 echo   electrs-doge compile    release electrs.exe - parks in-use binary, does not stop Core
-echo   electrs-doge launch     start, logged when called from dogenals
+echo   electrs-doge launch     start (logged to F:\DogecoinData\dogenals\logs)
 echo   electrs-doge kill       stop electrs.exe only - not Core, not port 3000
 echo   electrs-doge status     Electrum :50001 / HTTP :3003
 echo.
 echo Alias: electrs compile / launch / kill
-echo Full stack: dogenals launch
-echo Skip:       set DOGENALS_SKIP_ELECTRS=1
+echo Not part of dogenals launch/kill - start and stop yourself:
+echo   electrs launch
+echo   electrs kill
 echo HTTP:       http://127.0.0.1:3003  -^> https://electrs.command.dog
 echo Electrum:   tcp://127.0.0.1:50001  dogexplorer address pages
 exit /b 0

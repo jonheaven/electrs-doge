@@ -63,13 +63,14 @@ if (-not [System.Environment]::GetEnvironmentVariable('ELECTRS_DB_DIR', 'User'))
 
 Write-Host @"
 
-Done. Prefer the full stack:
-  dogenals launch              # starts electrs-doge (Electrum :50001 + Esplora :3003)
-  dogenals kill                # stops electrs.exe (not Core)
-  dogenals launch electrs      # electrs only
-  set DOGENALS_SKIP_ELECTRS=1  # omit from dogenals launch
+Done. electrs is separate from dogenals launch/kill:
+  electrs launch               # Electrum :50001 + Esplora :3003
+  electrs kill                 # stops electrs.exe only (not Core)
+  electrs status
+  dogenals launch electrs      # same as electrs launch
+  dogenals kill electrs        # same as electrs kill
 
-Standalone:
+Compile / standalone:
   electrs compile              # parks in-use electrs.exe, cargo build --release
   electrs-doge compile         # same
   electrs-doge launch

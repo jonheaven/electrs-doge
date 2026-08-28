@@ -103,15 +103,22 @@ electrs-doge launch
 dogenals tail electrs-doge
 ```
 
-## Stack (dogenals launch)
+## Ops (separate from dogenals launch)
 
-`dogenals launch` starts electrs-doge with the rest of the eco:
+electrs is **not** started or stopped by `dogenals launch` / `dogenals kill`. Bounce it on its own so Core RPC + disk stay with the product stack.
 
 - Electrum TCP `127.0.0.1:50001` — dogexplorer `/address/` pages (`DOGEXP_ADDRESS_API=electrum`)
 - Esplora HTTP `127.0.0.1:3003` — **not** `:3000` (that is command.dog/api). Public: `https://electrs.command.dog`
 - Index DB: `%DOGECOIN_DATA_DIR%\electrs` (default `F:\DogecoinData\electrs`) — read Core blocks/RPC only; never stop Core
 - Logs: `F:\DogecoinData\dogenals\logs\electrs-doge.log`
-- Skip: `DOGENALS_SKIP_ELECTRS=1`
+
+```text
+electrs launch
+electrs kill
+electrs status
+```
+
+Aliases: `electrs-doge launch|kill`, `dogenals launch electrs`, `dogenals kill electrs`.
 
 ## Limitations on Windows
 
