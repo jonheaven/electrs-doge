@@ -4,7 +4,7 @@
   Copy electrs-doge launch helpers into %USERPROFILE%\bin.
 
 .EXAMPLE
-  .\scripts\install-electrs-doge-bin.ps1 -DogecoRoot "$env:USERPROFILE\Desktop\dogeco"
+  .\scripts\install-electrs-doge-bin.ps1 -DogecoRoot "$env:USERPROFILE\dogestack"
 #>
 [CmdletBinding()]
 param(

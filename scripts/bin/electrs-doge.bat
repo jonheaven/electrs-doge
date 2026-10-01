@@ -9,7 +9,7 @@ set "CMD=%~1"
 if "%CMD%"=="" set "CMD=help"
 
 if defined ELECTRS_REPO set "ELECTRS_ROOT=%ELECTRS_REPO%"
-if not defined ELECTRS_ROOT set "ELECTRS_ROOT=%USERPROFILE%\Desktop\dogeco\electrs-doge"
+if not defined ELECTRS_ROOT set "ELECTRS_ROOT=%USERPROFILE%\dogestack\electrs-doge"
 
 if exist "%SCRIPT_DIR%electrs-doge-launch.ps1" goto :use_local_ps1
 set "LAUNCH_PS1=%ELECTRS_ROOT%\scripts\bin\electrs-doge-launch.ps1"

@@ -1,12 +1,12 @@
 #!/usr/bin/env pwsh
 # Reuse Kabosu shared Dogecoin Core env (DOGECOIN_DATA_DIR, RPC creds from dogecoin.conf).
-# Safe from ~/bin copies: prefer ELECTRS_REPO / Desktop\dogeco, never guess Core datadir wrong.
+# Safe from ~/bin copies: prefer ELECTRS_REPO / dogestack, never guess Core datadir wrong.
 
 $ScriptDir = $PSScriptRoot
 $candidates = @(
     (Join-Path $ScriptDir '..\..\..'),
-    (Join-Path $env:USERPROFILE 'Desktop\dogeco'),
-    'C:\Users\jheav\Desktop\dogeco'
+    (Join-Path $env:USERPROFILE 'dogestack'),
+    'C:\Users\jheav\dogestack'
 )
 $DogecoRoot = $null
 foreach ($c in $candidates) {
