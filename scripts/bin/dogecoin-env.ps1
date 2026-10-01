@@ -42,6 +42,13 @@ if (-not $env:ELECTRS_DB_DIR -and $env:DOGECOIN_DATA_DIR) {
     $env:ELECTRS_DB_DIR = Join-Path $env:DOGECOIN_DATA_DIR 'electrs'
 }
 
-if (-not $env:ELECTRS_REPO -and $DogecoRoot) {
-    $env:ELECTRS_REPO = Join-Path $DogecoRoot 'electrs-doge'
+$liveRepo = Join-Path $env:USERPROFILE 'dogestack\electrs-doge'
+$repoOk = $env:ELECTRS_REPO -and (Test-Path -LiteralPath (Join-Path $env:ELECTRS_REPO 'Cargo.toml'))
+if (-not $repoOk) {
+    if (Test-Path -LiteralPath (Join-Path $liveRepo 'Cargo.toml')) {
+        $env:ELECTRS_REPO = $liveRepo
+    }
+    elseif ($DogecoRoot) {
+        $env:ELECTRS_REPO = Join-Path $DogecoRoot 'electrs-doge'
+    }
 }
