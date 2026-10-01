@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 REM electrs-doge helper - Electrum :50001 + Esplora HTTP :3003
-REM Prefer: dogenals launch - starts this as part of the eco
+REM Prefer: dogestack launch - starts this as part of the eco
 REM No unescaped parentheses: cmd eats them when this bat is CALLed from if (...).
 
 set "SCRIPT_DIR=%~dp0"
@@ -39,14 +39,14 @@ echo electrs-doge - Electrum + Esplora HTTP for Dogecoin Core
 echo.
 echo Usage:
 echo   electrs-doge compile    release electrs.exe - parks in-use binary, does not stop Core
-echo   electrs-doge launch     start (logged to F:\DogecoinData\dogenals\logs)
+echo   electrs-doge launch     start (logged to F:\DogecoinData\dogestack\logs)
 echo   electrs-doge kill       stop electrs.exe only - not Core, not port 3000
 echo   electrs-doge status     Electrum :50001 / HTTP :3003
 echo.
 echo Alias: electrs compile / launch / kill
-echo Not part of dogenals launch/kill - start and stop yourself:
-echo   electrs launch
-echo   electrs kill
+echo dogestack launch starts electrs. dogestack kill leaves it up.
+echo   dogestack kill electrs
+echo   dogestack launch electrs
 echo HTTP:       http://127.0.0.1:3003  -^> https://electrs.command.dog
 echo Electrum:   tcp://127.0.0.1:50001  dogexplorer address pages
 exit /b 0

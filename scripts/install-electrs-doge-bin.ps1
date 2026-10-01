@@ -63,12 +63,12 @@ if (-not [System.Environment]::GetEnvironmentVariable('ELECTRS_DB_DIR', 'User'))
 
 Write-Host @"
 
-Done. electrs is separate from dogenals launch/kill:
+Done. dogestack launch starts electrs. dogestack kill leaves it up.
   electrs launch               # Electrum :50001 + Esplora :3003
   electrs kill                 # stops electrs.exe only (not Core)
   electrs status
-  dogenals launch electrs      # same as electrs launch
-  dogenals kill electrs        # same as electrs kill
+  dogestack launch electrs     # same as electrs launch
+  dogestack kill electrs       # same as electrs kill
 
 Compile / standalone:
   electrs compile              # parks in-use electrs.exe, cargo build --release

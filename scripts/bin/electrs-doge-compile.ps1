@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 # Release-build electrs.exe. Parks the in-use binary so cargo can write
-# while the indexer keeps running (same trick as dogenals compile).
+# while the indexer keeps running (same trick as dogestack compile).
 # Never stops Dogecoin Core.
 #Requires -Version 5.1
 [CmdletBinding()]
@@ -112,5 +112,5 @@ Write-Host "Built: $exe" -ForegroundColor Green
 Write-Host "Stack is still on the old binary. Brief switchover:" -ForegroundColor Yellow
 Write-Host "  electrs-doge kill"
 Write-Host "  electrs-doge launch"
-Write-Host "Or: dogenals kill electrs && dogenals launch electrs"
+Write-Host "Or: dogestack kill electrs && dogestack launch electrs"
 exit 0

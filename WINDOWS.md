@@ -18,7 +18,7 @@ The `doge` branch is Blockstream electrs with `rust-dogecoin` for AuxPoW + Dogec
 What was **not** retuned for Dogecoin L1 (fixed in this fork):
 
 - JSON-RPC batches of **50,000** `getblockheader`s. Fine for 80-byte Bitcoin headers. Dogecoin headers include **AuxPoW**, so Core 1.14 drops the socket around `DAEMON_READ_TIMEOUT` (10 min) and electrs retries the same gulp forever. Index tip stays 0; Electrum/HTTP never bind. Now `JSONRPC_BATCH_SIZE = 64`. Log: `downloading headers START..=END (N/TIP)`.
-- Default Core RPC **:8332** / `~/.bitcoin` (this fork defaults to **:22555** / `~/.dogecoin`; `dogenals launch` already passed the right flags).
+- Default Core RPC **:8332** / `~/.bitcoin` (this fork defaults to **:22555** / `~/.dogecoin`; `dogestack launch` already passed the right flags).
 - Pipeline depth **1** (Blockstream now uses **2**) and a **new rayon pool per blk file**.
 - Whole-file `fs::read` plus **byte-scanning Core zero-padding** after the last real block (minutes per `blk*.dat`).
 
@@ -39,7 +39,7 @@ dogex is the metaprotocol indexer. Useful **I/O** ideas, not its protocol index:
 
 This fork: header batches of 64, pipeline depth 2, reused parse pool, sequential 32 MiB batches, RocksDB `increase_parallelism(num_cpus)`, compaction readahead 4 MiB, **256 MiB SST**, `max_open_files=1024`, **bloom + 256 MiB block cache**, 32 KiB table blocks on newly compacted files, `advise_random_on_open(true)` (history lookups are random). After txstore ingest, electrs **waits for L0 to drain** before history prevout lookups.
 
-**History looks frozen (this PC):** txstore can sit at ~75 GB / ~900 SST files on the **F: WD Blue HDD**. Electrum/HTTP do not bind until history is done. A `dogenals tail electrs` stuck on `reading blk file 1/1353` with no new INFO lines means history `get()` is scanning every overlapping L0 file (~100 MB/s reads, ~0 writes, ~2 batches/night). Not a hung process — unusable I/O. Current binary compact-waits first (log: `compacting txstore before history (L0=…)` every 30s) then logs `history heights A..=B (N blocks, P prevouts, lookup …)` per batch.
+**History looks frozen (this PC):** txstore can sit at ~75 GB / ~900 SST files on the **F: WD Blue HDD**. Electrum/HTTP do not bind until history is done. A `dogestack tail electrs` stuck on `reading blk file 1/1353` with no new INFO lines means history `get()` is scanning every overlapping L0 file (~100 MB/s reads, ~0 writes, ~2 batches/night). Not a hung process — unusable I/O. Current binary compact-waits first (log: `compacting txstore before history (L0=…)` every 30s) then logs `history heights A..=B (N blocks, P prevouts, lookup …)` per batch.
 
 ## Runtime (this PC)
 
@@ -70,8 +70,8 @@ Do **not** delete `F:\DogecoinData\electrs`. Free space, then bounce **electrs o
 
 ```text
 electrs compile
-dogenals kill electrs
-dogenals launch electrs
+dogestack kill electrs
+dogestack launch electrs
 ```
 
 - Header download writes `B{hash}` rows every 8k headers and flushes.
@@ -100,17 +100,17 @@ Do not enable `--enable-mining-rest` on the public tunnel unless you want miners
 electrs compile
 electrs-doge kill
 electrs-doge launch
-dogenals tail electrs-doge
+dogestack tail electrs-doge
 ```
 
-## Ops (separate from dogenals launch)
+## Ops
 
-electrs is **not** started or stopped by `dogenals launch` / `dogenals kill`. Bounce it on its own so Core RPC + disk stay with the product stack.
+`dogestack launch` starts electrs. `dogestack kill` leaves it up. Stop it with `dogestack kill electrs` or `electrs kill`.
 
 - Electrum TCP `127.0.0.1:50001` — dogexplorer `/address/` pages (`DOGEXP_ADDRESS_API=electrum`)
 - Esplora HTTP `127.0.0.1:3003` — **not** `:3000` (that is command.dog/api). Public: `https://electrs.command.dog`
 - Index DB: `%DOGECOIN_DATA_DIR%\electrs` (default `F:\DogecoinData\electrs`) — read Core blocks/RPC only; never stop Core
-- Logs: `F:\DogecoinData\dogenals\logs\electrs-doge.log`
+- Logs: `F:\DogecoinData\dogestack\logs\electrs-doge.log`
 
 ```text
 electrs launch
@@ -118,7 +118,7 @@ electrs kill
 electrs status
 ```
 
-Aliases: `electrs-doge launch|kill`, `dogenals launch electrs`, `dogenals kill electrs`.
+Aliases: `electrs-doge launch|kill`, `dogestack launch electrs`, `dogestack kill electrs`.
 
 ## Limitations on Windows
 
@@ -134,4 +134,4 @@ electrs-doge kill
 electrs-doge launch
 ```
 
-Or: `cd electrs-doge && cargo build --release`. `electrs compile` parks a running `electrs.exe` so the linker can write (same as `dogenals compile`). Does not stop Core.
+Or: `cd electrs-doge && cargo build --release`. `electrs compile` parks a running `electrs.exe` so the linker can write (same as `dogestack compile`). Does not stop Core.
