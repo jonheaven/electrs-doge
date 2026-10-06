@@ -63,7 +63,7 @@ if (-not [System.Environment]::GetEnvironmentVariable('ELECTRS_DB_DIR', 'User'))
 
 Write-Host @"
 
-Done. dogestack launch starts electrs. dogestack kill leaves it up.
+Done. dogestack launch does not start electrs. dogestack kill stops it.
   electrs launch               # Electrum :50001 + Esplora :3003
   electrs kill                 # stops electrs.exe only (not Core)
   electrs status
