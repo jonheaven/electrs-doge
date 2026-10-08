@@ -49,6 +49,7 @@ echo   dogestack launch electrs
 echo   dogestack kill electrs
 echo HTTP:       http://127.0.0.1:3003  -^> https://electrs.command.dog
 echo Electrum:   tcp://127.0.0.1:50001  dogexplorer address pages
+echo Tip-ready:  GET /blocks/tip/height within 6 blocks of Core getblockcount
 exit /b 0
 
 :launch

@@ -105,10 +105,18 @@ dogestack tail electrs-doge
 
 ## Ops
 
-`dogestack launch` starts electrs. `dogestack kill` leaves it up. Stop it with `dogestack kill electrs` or `electrs kill`.
+`dogestack launch` does not start electrs. Start it with `electrs launch` or `dogestack launch electrs`. `dogestack kill` stops it. Also: `electrs kill` / `dogestack kill electrs`.
+
+Launch binds localhost only (`127.0.0.1`). `0.0.0.0` or `::` in `ELECTRS_HTTP_ADDR` / `ELECTRS_ELECTRUM_ADDR` is rewritten to `127.0.0.1` on the same port.
 
 - Electrum TCP `127.0.0.1:50001` — dogexplorer `/address/` pages (`DOGEXP_ADDRESS_API=electrum`)
 - Esplora HTTP `127.0.0.1:3003` — **not** `:3000` (that is command.dog/api). Public: `https://electrs.command.dog`
+
+### Tip-ready signal
+
+`GET http://127.0.0.1:3003/blocks/tip/height` returns the indexed header tip as a plain integer.
+
+UTXO callers (dogex, command.dog, dogebot) treat electrs as ready only when that height is within **6 blocks** of Core `getblockcount` (`electrs + 6 >= core`). A listening port is not the signal. Until the height is that close, those callers keep MyDoge or Core `listunspent` / `scantxoutset`.
 - Index DB: `%DOGECOIN_DATA_DIR%\electrs` (default `F:\DogecoinData\electrs`) — read Core blocks/RPC only; never stop Core
 - Logs: `F:\DogecoinData\dogestack\logs\electrs-doge.log`
 

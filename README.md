@@ -8,6 +8,8 @@ API documentation [is available here](https://github.com/blockstream/esplora/blo
 
 Dogecoin fork deltas (`POST /txs/package` 501, `GET /block-template`, RocksDB ingest knobs): [WINDOWS.md](WINDOWS.md). Local Blockstream clone: `../ref/esplora/`.
 
+Studio launch binds `127.0.0.1:50001` and `127.0.0.1:3003` (not the clap default `:3000`). Tip-ready for UTXO callers is `GET /blocks/tip/height` within 6 blocks of Core. See [WINDOWS.md](WINDOWS.md).
+
 Documentation for the database schema and indexing process [is available here](doc/schema.md).
 
 ### Installing & indexing
@@ -64,7 +66,7 @@ but instead queried from bitcoind on demand.
 
 In addition to electrs's original configuration options, a few new options are also available:
 
-- `--http-addr <addr:port>` - HTTP server address/port to listen on (default: `127.0.0.1:3000`).
+- `--http-addr <addr:port>` - HTTP server address/port to listen on (clap default: `127.0.0.1:3000`). This studio's launch script passes `127.0.0.1:3003`.
 - `--lightmode` - enable light mode (see above)
 - `--cors <origins>` - origins allowed to make cross-site request (optional, defaults to none).
 - `--address-search` - enables the by-prefix address search index.

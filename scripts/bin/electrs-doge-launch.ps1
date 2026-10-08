@@ -63,6 +63,23 @@ if ($httpAddr -match ':3000\s*$') {
     $httpAddr = '127.0.0.1:3003'
 }
 
+function Use-LocalhostBind([string]$Addr, [string]$Fallback) {
+    $trimmed = $Addr.Trim()
+    if ($trimmed -match '^(?<bindHost>.+):(?<port>\d+)$') {
+        $name = $Matches['bindHost'].Trim('[', ']')
+        if ($name -eq '0.0.0.0' -or $name -eq '::' -or $name -eq '*') {
+            $rewritten = "127.0.0.1:$($Matches['port'])"
+            Write-Host "electrs binds localhost only — $trimmed -> $rewritten" -ForegroundColor Yellow
+            return $rewritten
+        }
+        return $trimmed
+    }
+    return $Fallback
+}
+
+$electrumAddr = Use-LocalhostBind $electrumAddr '127.0.0.1:50001'
+$httpAddr = Use-LocalhostBind $httpAddr '127.0.0.1:3003'
+
 $electrumPort = Get-ListenPort $electrumAddr 50001
 $httpPort = Get-ListenPort $httpAddr 3003
 $rpcPort = Get-ListenPort $daemonRpc 22555
@@ -172,6 +189,8 @@ Write-Host "  Index DB:   $(Join-Path $dbDir $network)" -ForegroundColor DarkGra
 Write-Host "  Mode:       $(if ($useLightMode) { 'light (less disk, more Core RPC)' } else { 'full index' })" -ForegroundColor $(if ($useLightMode) { 'Yellow' } else { 'Green' })
 Write-Host "  Electrum:   tcp://$electrumAddr" -ForegroundColor Green
 Write-Host "  HTTP API:   http://$httpAddr  (esplora; public electrs.command.dog)" -ForegroundColor Green
+Write-Host "  Tip-ready:  GET http://$httpAddr/blocks/tip/height" -ForegroundColor Green
+Write-Host '              UTXO callers use that height only when it is within 6 blocks of Core getblockcount.' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host 'dogexplorer (backend/.env):' -ForegroundColor Yellow
 Write-Host '  DOGEXP_ADDRESS_API=electrum'
